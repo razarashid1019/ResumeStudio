@@ -242,7 +242,9 @@ views.dashboard = async function renderDashboard() {
   const newJobs = jobs.filter((j) => j.status === "new" || j.status === "shortlisted").slice(0, 4);
   if (newJobs.length) {
     root.appendChild(el("div", { class: "section-title" }, "Fresh on the job board"));
-    newJobs.forEach((j) => root.appendChild(jobCard(j)));
+    const list = el("div", { class: "job-row-list" });
+    newJobs.forEach((j) => list.appendChild(jobListRow(j, { onClick: () => openJobDetail(j) })));
+    root.appendChild(list);
   }
 };
 
@@ -256,6 +258,7 @@ function statTile(value, label) {
 // ------------------------------------------------------------- job board --
 
 let jobFilter = "all";
+let selectedJobId = null;
 
 views.jobs = async function renderJobs() {
   const root = document.getElementById("view-jobs");
@@ -264,7 +267,7 @@ views.jobs = async function renderJobs() {
 
   root.innerHTML = "";
   root.appendChild(el("h1", { class: "page-title" }, "Job Board"));
-  root.appendChild(el("p", { class: "page-subtitle" }, "Sourced candidates — prep an application without leaving this view."));
+  root.appendChild(el("p", { class: "page-subtitle" }, `${jobs.length} postings — browse the list, click one to read the full posting.`));
 
   const filters = ["all", ...JOB_STATUSES];
   const filterRow = el("div", { class: "filter-row" });
@@ -276,58 +279,85 @@ views.jobs = async function renderJobs() {
   root.appendChild(filterRow);
 
   const shown = jobFilter === "all" ? jobs : jobs.filter((j) => j.status === jobFilter);
-  const grid = el("div", { class: "job-grid" });
-  if (!shown.length) grid.appendChild(el("div", { class: "empty-state" }, "No jobs in this category."));
-  shown.forEach((j) => grid.appendChild(jobCard(j)));
-  root.appendChild(grid);
+
+  if (!shown.length) {
+    root.appendChild(el("div", { class: "empty-state" }, "No jobs in this category."));
+    return;
+  }
+
+  // Split-pane (list + inline detail) needs real room for both columns.
+  // Below that, Indeed itself falls back to a single scrolling list with
+  // the full posting opening on tap — same fallback here, via the modal.
+  const wide = window.innerWidth >= 1050;
+
+  if (!wide) {
+    const list = el("div", { class: "job-row-list" });
+    shown.forEach((j) => list.appendChild(jobListRow(j, { onClick: () => openJobDetail(j) })));
+    root.appendChild(list);
+    return;
+  }
+
+  if (!shown.some((j) => j.id === selectedJobId)) selectedJobId = shown[0].id;
+
+  const listCol = el("div", { class: "job-list-col" });
+  const detailCol = el("div", { class: "job-detail-col" });
+
+  function renderList() {
+    listCol.innerHTML = "";
+    shown.forEach((j) => {
+      listCol.appendChild(jobListRow(j, {
+        selected: j.id === selectedJobId,
+        onClick: () => { selectedJobId = j.id; renderList(); renderDetail(); },
+      }));
+    });
+  }
+  function renderDetail() {
+    const job = shown.find((j) => j.id === selectedJobId);
+    detailCol.innerHTML = "";
+    if (job) detailCol.appendChild(buildJobDetailNode(job, { onChanged: () => views.jobs() }));
+  }
+
+  renderList();
+  renderDetail();
+  root.appendChild(el("div", { class: "job-split" }, [listCol, detailCol]));
 };
 
-function jobCard(job) {
-  const card = el("div", { class: "job-card" });
+// Re-layout the job board on resize (the split-pane/list-only breakpoint
+// depends on window width) — debounced, and only while that view is showing.
+let jobsResizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(jobsResizeTimer);
+  jobsResizeTimer = setTimeout(() => {
+    if (document.body.dataset.view === "jobs") views.jobs();
+  }, 200);
+});
 
-  const header = el("div", { class: "job-card-top" }, [
-    companyLogoNode(job, 44),
-    el("div", { class: "job-card-heading" }, [
-      el("div", { class: "job-company" }, job.company),
-      el("div", { class: "job-role" }, job.role || ""),
-    ]),
+function jobListRow(job, { selected, onClick } = {}) {
+  const row = el("div", { class: "job-row" + (selected ? " selected" : "") });
+  row.appendChild(companyLogoNode(job, 36));
+
+  const body = el("div", { class: "job-row-body" });
+  body.appendChild(el("div", { class: "job-row-top" }, [
+    el("span", { class: "job-row-role" }, job.role || job.company),
     el("span", { class: pillClass(job.status) }, job.status.replace(/_/g, " ")),
-  ]);
-  header.addEventListener("click", (e) => {
-    if (e.target.closest("a,button")) return;
-    openJobDetail(job);
-  });
-  card.appendChild(header);
+  ]));
+  body.appendChild(el("div", { class: "job-row-company" }, job.company));
 
-  const chips = [];
-  splitLocations(job.location).forEach((loc) => chips.push(el("span", { class: "meta-chip" }, loc)));
-  if (job.comp) chips.push(el("span", { class: "meta-chip meta-chip-comp" }, job.comp));
-  const ago = daysAgo(job.date_added);
-  if (ago) chips.push(el("span", { class: "meta-chip meta-chip-muted" }, ago));
-  if (chips.length) card.appendChild(el("div", { class: "meta-chip-row" }, chips));
+  const metaBits = [splitLocations(job.location).join(" · "), job.comp, daysAgo(job.date_added)].filter(Boolean);
+  if (metaBits.length) body.appendChild(el("div", { class: "job-row-meta" }, metaBits.join(" · ")));
 
-  if (job.why) card.appendChild(el("div", { class: "job-why" }, job.why));
+  const snippet = job.why || job.notes;
+  if (snippet) body.appendChild(el("div", { class: "job-row-snippet" }, snippet));
   if (job.red_flags && job.red_flags.length) {
-    card.appendChild(el("div", { class: "job-flags" }, "⚠ " + job.red_flags.join(" ")));
+    body.appendChild(el("div", { class: "job-row-flag" }, "⚠ " + job.red_flags[0]));
   }
-  const actions = el("div", { class: "job-actions" });
-  if (job.link) {
-    actions.appendChild(el("a", { class: "btn", href: job.link, target: "_blank", rel: "noopener" }, "Open posting"));
-  }
-  if (job.status !== "ruled_out" && job.status !== "ready_to_apply" && job.status !== "applied") {
-    const prepBtn = el("button", { class: "btn btn-primary" }, job.status === "preparing" ? "Preparing…" : "Prepare Application");
-    prepBtn.disabled = job.status === "preparing";
-    prepBtn.addEventListener("click", () => startPrepare(job, prepBtn));
-    actions.appendChild(prepBtn);
-  }
-  if (job.status === "ready_to_apply") {
-    actions.appendChild(el("span", { class: "job-meta" }, "Ready — open the posting and submit yourself"));
-  }
-  card.appendChild(actions);
-  return card;
+
+  row.appendChild(body);
+  row.addEventListener("click", () => onClick && onClick());
+  return row;
 }
 
-async function openJobDetail(job) {
+function buildJobDetailNode(job, { onChanged } = {}) {
   const wrap = el("div");
   wrap.appendChild(el("div", { class: "detail-header-row" }, [
     companyLogoNode(job, 64),
@@ -340,6 +370,8 @@ async function openJobDetail(job) {
   const chips = [];
   splitLocations(job.location).forEach((loc) => chips.push(el("span", { class: "meta-chip" }, loc)));
   if (job.comp) chips.push(el("span", { class: "meta-chip meta-chip-comp" }, job.comp));
+  const ago = daysAgo(job.date_added);
+  if (ago) chips.push(el("span", { class: "meta-chip meta-chip-muted" }, ago));
   if (chips.length) wrap.appendChild(el("div", { class: "meta-chip-row", style: "margin:14px 0;" }, chips));
 
   const statusPicker = el("select", { class: "status-select" });
@@ -354,8 +386,20 @@ async function openJobDetail(job) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: statusPicker.value }),
     });
-    views.jobs(); views.dashboard();
+    views.dashboard();
+    onChanged && onChanged();
   });
+
+  const actions = el("div", { class: "job-actions", style: "margin:14px 0;" });
+  if (job.link) actions.appendChild(el("a", { class: "btn btn-primary", href: job.link, target: "_blank", rel: "noopener" }, "Open posting"));
+  if (job.status !== "ruled_out" && job.status !== "ready_to_apply" && job.status !== "applied") {
+    const prepBtn = el("button", { class: "btn" }, job.status === "preparing" ? "Preparing…" : "Prepare Application");
+    prepBtn.disabled = job.status === "preparing";
+    prepBtn.addEventListener("click", () => startPrepare(job, prepBtn));
+    actions.appendChild(prepBtn);
+  }
+  wrap.appendChild(actions);
+
   wrap.appendChild(el("div", { class: "detail-section" }, [
     el("div", { class: "detail-field-label" }, "Status"),
     statusPicker,
@@ -380,11 +424,11 @@ async function openJobDetail(job) {
     el("div", { class: "detail-field-value" }, job.source),
   ]));
 
-  const actions = el("div", { class: "job-actions", style: "margin-top:8px;" });
-  if (job.link) actions.appendChild(el("a", { class: "btn btn-primary", href: job.link, target: "_blank", rel: "noopener" }, "Open posting"));
-  wrap.appendChild(actions);
+  return wrap;
+}
 
-  openPanel(wrap);
+function openJobDetail(job) {
+  openPanel(buildJobDetailNode(job, { onChanged: () => { views.dashboard(); } }));
 }
 
 async function startPrepare(job, btn) {

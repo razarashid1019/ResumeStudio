@@ -239,21 +239,41 @@ p.page-subtitle { color: var(--text-secondary); margin: 0 0 28px; font-size: 14p
 }
 .chip.active { background: var(--accent); color: white; border-color: var(--accent); }
 
-.job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
-.job-card {
-  background: var(--bg-elevated); border-radius: var(--radius); box-shadow: var(--shadow);
-  padding: 18px; display: flex; flex-direction: column; gap: 10px;
-  transition: box-shadow .18s ease, transform .18s ease;
-}
-.job-card:hover { box-shadow: var(--shadow-hover); }
-.job-card-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; }
-.job-card-heading { flex: 1; min-width: 0; }
-.job-company { font-weight: 700; font-size: 15px; }
-.job-role { font-size: 13px; color: var(--text-secondary); margin-top: 1px; }
 .job-meta { font-size: 12px; color: var(--text-tertiary); }
 .job-why { font-size: 12.5px; color: var(--text); line-height: 1.45; }
 .job-flags { font-size: 11.5px; color: var(--pill-interview-fg); background: var(--pill-interview-bg); border-radius: 8px; padding: 6px 9px; }
 .job-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+
+/* ---------- Job Board: Indeed-style scrolling list + detail pane ---------- */
+.job-split { display: flex; gap: 18px; align-items: flex-start; }
+.job-list-col {
+  flex: 0 0 400px; display: flex; flex-direction: column; gap: 2px;
+  max-height: calc(100vh - 230px); overflow-y: auto; padding-right: 6px; margin-right: -6px;
+}
+.job-detail-col {
+  flex: 1; min-width: 0;
+  max-height: calc(100vh - 230px); overflow-y: auto;
+  background: var(--bg-elevated); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 26px 28px;
+}
+.job-row-list { display: flex; flex-direction: column; gap: 2px; }
+
+.job-row {
+  display: flex; gap: 12px; padding: 14px 12px; border-radius: 10px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.job-row:hover { background: rgba(127,127,127,0.08); }
+.job-row.selected { background: var(--accent-soft); border-color: var(--accent); }
+.job-row-body { flex: 1; min-width: 0; }
+.job-row-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.job-row-role { font-weight: 700; font-size: 14px; line-height: 1.3; }
+.job-row-company { font-size: 12.5px; color: var(--text-secondary); margin-top: 1px; }
+.job-row-meta { font-size: 11.5px; color: var(--text-tertiary); margin-top: 4px; }
+.job-row-snippet {
+  font-size: 12px; color: var(--text-secondary); line-height: 1.4; margin-top: 6px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.job-row-flag { font-size: 11px; color: var(--pill-interview-fg); margin-top: 5px; }
 
 /* ---------- Company logos / avatars ---------- */
 .company-logo { flex-shrink: 0; border-radius: 12px; overflow: hidden; }
