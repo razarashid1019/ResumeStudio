@@ -26,6 +26,93 @@ async function api(path, opts) {
   return res.json();
 }
 
+// ---------------------------------------------------------- company logos --
+// Progressive enhancement: show a colored initials avatar immediately (works
+// fully offline), swap in the site's real favicon if/when it loads. No logo
+// data is stored — everything here is derived from job.company / job.link.
+
+const AVATAR_COLORS = ["#0071e3", "#34c9eb", "#8b3fd6", "#ff9500", "#1f9254", "#ff3b30", "#ff2d92", "#5e5ce6"];
+
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function companyInitials(name) {
+  const words = (name || "?").replace(/[,.]/g, "").split(/\s+/).filter(Boolean);
+  if (!words.length) return "?";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+// Third-party ATS/job-board platforms — their favicon would misleadingly
+// represent every company that happens to post through them, so skip and
+// fall back to the initials avatar instead of showing (say) Greenhouse's
+// logo on a card for a company that merely uses Greenhouse to host its form.
+const ATS_HOST_PATTERNS = [
+  "ashbyhq.com", "greenhouse.io", "lever.co", "myworkdayjobs.com", "myworkdaysite.com",
+  "icims.com", "workable.com", "oraclecloud.com", "smartrecruiters.com", "jobvite.com",
+  "paylocity.com", "taleo.net", "eightfold.ai", "applytojob.com", "jobright.ai",
+  "interninsider.me", "recsolu.com", "yello.co", "workatastartup.com",
+];
+
+function faviconUrl(link) {
+  try {
+    const host = new URL(link).hostname;
+    if (ATS_HOST_PATTERNS.some((p) => host.includes(p))) return null;
+    return `https://www.google.com/s2/favicons?domain=${host}&sz=128`;
+  } catch {
+    return null;
+  }
+}
+
+function companyLogoNode(job, size = 44) {
+  const wrap = el("div", { class: "company-logo", style: `width:${size}px;height:${size}px;` });
+  const avatar = el(
+    "div",
+    {
+      class: "company-avatar",
+      style: `background:${AVATAR_COLORS[hashStr(job.company || "?") % AVATAR_COLORS.length]};font-size:${Math.round(size * 0.4)}px;`,
+    },
+    companyInitials(job.company)
+  );
+  wrap.appendChild(avatar);
+  const url = job.link ? faviconUrl(job.link) : null;
+  if (url) {
+    const img = new Image();
+    img.className = "company-favicon";
+    img.width = size;
+    img.height = size;
+    img.onload = () => {
+      wrap.innerHTML = "";
+      wrap.appendChild(img);
+    };
+    img.src = url; // onerror: leave the avatar fallback already showing
+  }
+  return wrap;
+}
+
+// -------------------------------------------------------------- locations --
+// OpenClaw's multi-location postings arrive concatenated with no separator
+// ("Irvine, CASanta Clara, CA...") — split them back into a clean list.
+
+function splitLocations(loc) {
+  if (!loc) return [];
+  const fixed = loc.replace(/([A-Z]{2})(?=[A-Z][a-z])/g, "$1|").replace(/\//g, "|");
+  return fixed.split("|").map((s) => s.trim()).filter(Boolean);
+}
+
+function daysAgo(dateStr) {
+  if (!dateStr) return null;
+  const then = new Date(dateStr);
+  if (isNaN(then)) return null;
+  const days = Math.floor((Date.now() - then) / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
+}
+
 // Minimal markdown -> HTML. Covers what's actually used in these files:
 // headers, bold, links, inline code, lists, blockquotes, paragraphs.
 function renderMarkdown(src) {
@@ -196,16 +283,28 @@ views.jobs = async function renderJobs() {
 
 function jobCard(job) {
   const card = el("div", { class: "job-card" });
-  card.appendChild(el("div", { class: "job-card-top" }, [
-    el("div", {}, [
+
+  const header = el("div", { class: "job-card-top" }, [
+    companyLogoNode(job, 44),
+    el("div", { class: "job-card-heading" }, [
       el("div", { class: "job-company" }, job.company),
       el("div", { class: "job-role" }, job.role || ""),
     ]),
     el("span", { class: pillClass(job.status) }, job.status.replace(/_/g, " ")),
-  ]));
-  if (job.location || job.comp) {
-    card.appendChild(el("div", { class: "job-meta" }, [job.location, job.comp].filter(Boolean).join(" · ")));
-  }
+  ]);
+  header.addEventListener("click", (e) => {
+    if (e.target.closest("a,button")) return;
+    openJobDetail(job);
+  });
+  card.appendChild(header);
+
+  const chips = [];
+  splitLocations(job.location).forEach((loc) => chips.push(el("span", { class: "meta-chip" }, loc)));
+  if (job.comp) chips.push(el("span", { class: "meta-chip meta-chip-comp" }, job.comp));
+  const ago = daysAgo(job.date_added);
+  if (ago) chips.push(el("span", { class: "meta-chip meta-chip-muted" }, ago));
+  if (chips.length) card.appendChild(el("div", { class: "meta-chip-row" }, chips));
+
   if (job.why) card.appendChild(el("div", { class: "job-why" }, job.why));
   if (job.red_flags && job.red_flags.length) {
     card.appendChild(el("div", { class: "job-flags" }, "⚠ " + job.red_flags.join(" ")));
@@ -225,6 +324,66 @@ function jobCard(job) {
   }
   card.appendChild(actions);
   return card;
+}
+
+async function openJobDetail(job) {
+  const wrap = el("div");
+  wrap.appendChild(el("div", { class: "detail-header-row" }, [
+    companyLogoNode(job, 64),
+    el("div", {}, [
+      el("h2", { style: "margin-bottom:2px;" }, job.company),
+      el("div", { class: "card-sub" }, job.role || ""),
+    ]),
+  ]));
+
+  const chips = [];
+  splitLocations(job.location).forEach((loc) => chips.push(el("span", { class: "meta-chip" }, loc)));
+  if (job.comp) chips.push(el("span", { class: "meta-chip meta-chip-comp" }, job.comp));
+  if (chips.length) wrap.appendChild(el("div", { class: "meta-chip-row", style: "margin:14px 0;" }, chips));
+
+  const statusPicker = el("select", { class: "status-select" });
+  JOB_STATUSES.forEach((s) => {
+    const opt = el("option", { value: s }, s.replace(/_/g, " "));
+    if (s === job.status) opt.selected = true;
+    statusPicker.appendChild(opt);
+  });
+  statusPicker.addEventListener("change", async () => {
+    await api(`/api/jobs/${job.id}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: statusPicker.value }),
+    });
+    views.jobs(); views.dashboard();
+  });
+  wrap.appendChild(el("div", { class: "detail-section" }, [
+    el("div", { class: "detail-field-label" }, "Status"),
+    statusPicker,
+  ]));
+
+  if (job.why) wrap.appendChild(el("div", { class: "detail-section" }, [
+    el("h3", {}, "Why this role"),
+    el("div", { class: "md-body" }, job.why),
+  ]));
+  if (job.notes) wrap.appendChild(el("div", { class: "detail-section" }, [
+    el("h3", {}, "Notes"),
+    el("div", { class: "md-body" }, job.notes),
+  ]));
+  if (job.red_flags && job.red_flags.length) {
+    wrap.appendChild(el("div", { class: "detail-section" }, [
+      el("h3", {}, "Red flags"),
+      el("div", { class: "job-flags" }, job.red_flags.join(" ")),
+    ]));
+  }
+  if (job.source) wrap.appendChild(el("div", { class: "detail-section" }, [
+    el("div", { class: "detail-field-label" }, "Source"),
+    el("div", { class: "detail-field-value" }, job.source),
+  ]));
+
+  const actions = el("div", { class: "job-actions", style: "margin-top:8px;" });
+  if (job.link) actions.appendChild(el("a", { class: "btn btn-primary", href: job.link, target: "_blank", rel: "noopener" }, "Open posting"));
+  wrap.appendChild(actions);
+
+  openPanel(wrap);
 }
 
 async function startPrepare(job, btn) {

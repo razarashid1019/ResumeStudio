@@ -204,18 +204,40 @@ p.page-subtitle { color: var(--text-secondary); margin: 0 0 28px; font-size: 14p
 }
 .chip.active { background: var(--accent); color: white; border-color: var(--accent); }
 
-.job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
 .job-card {
   background: var(--bg-elevated); border-radius: var(--radius); box-shadow: var(--shadow);
-  padding: 18px; display: flex; flex-direction: column; gap: 8px;
+  padding: 18px; display: flex; flex-direction: column; gap: 10px;
+  transition: box-shadow .18s ease, transform .18s ease;
 }
-.job-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.job-card:hover { box-shadow: var(--shadow-hover); }
+.job-card-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; }
+.job-card-heading { flex: 1; min-width: 0; }
 .job-company { font-weight: 700; font-size: 15px; }
 .job-role { font-size: 13px; color: var(--text-secondary); margin-top: 1px; }
 .job-meta { font-size: 12px; color: var(--text-tertiary); }
 .job-why { font-size: 12.5px; color: var(--text); line-height: 1.45; }
 .job-flags { font-size: 11.5px; color: var(--pill-interview-fg); background: var(--pill-interview-bg); border-radius: 8px; padding: 6px 9px; }
-.job-actions { display: flex; gap: 8px; margin-top: 6px; }
+.job-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+
+/* ---------- Company logos / avatars ---------- */
+.company-logo { flex-shrink: 0; border-radius: 12px; overflow: hidden; }
+.company-avatar {
+  width: 100%; height: 100%; border-radius: 12px; color: white; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; letter-spacing: -0.02em;
+}
+.company-favicon { width: 100%; height: 100%; object-fit: contain; border-radius: 12px; background: white; padding: 6px; box-sizing: border-box; }
+
+/* ---------- Meta chips (location / comp / age) ---------- */
+.meta-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.meta-chip {
+  font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 100px;
+  background: rgba(127,127,127,0.14); color: var(--text-secondary);
+}
+.meta-chip-comp { background: var(--pill-offer-bg); color: var(--pill-offer-fg); }
+.meta-chip-muted { background: transparent; color: var(--text-tertiary); font-weight: 500; padding-left: 0; }
+
+.detail-header-row { display: flex; align-items: center; gap: 16px; margin-bottom: 4px; }
 
 /* ---------- Buttons ---------- */
 .btn {
