@@ -244,18 +244,30 @@ p.page-subtitle { color: var(--text-secondary); margin: 0 0 28px; font-size: 14p
 .job-flags { font-size: 11.5px; color: var(--pill-interview-fg); background: var(--pill-interview-bg); border-radius: 8px; padding: 6px 9px; }
 .job-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 
-/* ---------- Job Board: Indeed-style scrolling list + detail pane ---------- */
-.job-split { display: flex; gap: 18px; align-items: flex-start; }
-.job-list-col {
-  flex: 0 0 400px; display: flex; flex-direction: column; gap: 2px;
-  max-height: calc(100vh - 230px); overflow-y: auto; padding-right: 6px; margin-right: -6px;
+/* ---------- Job Board: photo-card grid, infinite scroll ---------- */
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; }
+.scroll-sentinel { height: 1px; }
+
+.photo-card {
+  background: var(--bg-elevated); border-radius: var(--radius); overflow: hidden;
+  box-shadow: var(--shadow); cursor: pointer; display: flex; flex-direction: column;
+  transition: box-shadow .18s ease, transform .18s ease;
 }
-.job-detail-col {
-  flex: 1; min-width: 0;
-  max-height: calc(100vh - 230px); overflow-y: auto;
-  background: var(--bg-elevated); border-radius: var(--radius); box-shadow: var(--shadow);
-  padding: 26px 28px;
+.photo-card:hover { box-shadow: var(--shadow-hover); transform: translateY(-2px); }
+.photo-card-image {
+  height: 132px; background-size: cover; background-position: center; position: relative;
+  display: flex; align-items: flex-start; justify-content: flex-end; padding: 10px; flex-shrink: 0;
 }
+.photo-card-image-fallback { justify-content: flex-end; }
+.photo-card-initials {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: rgba(255,255,255,0.92); font-weight: 800; font-size: 32px; letter-spacing: -0.02em;
+}
+.photo-card-body { padding: 13px 15px 16px; display: flex; flex-direction: column; gap: 3px; }
+.photo-card-role { font-weight: 700; font-size: 14.5px; line-height: 1.3; }
+.photo-card-company { font-size: 12.5px; color: var(--text-secondary); }
+
+/* Dashboard's compact preview rows reuse .job-row (below), unrelated to the grid */
 .job-row-list { display: flex; flex-direction: column; gap: 2px; }
 
 .job-row {

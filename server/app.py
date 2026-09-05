@@ -14,11 +14,12 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.request
 import uuid
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 APP_HOME = Path(__file__).resolve().parent.parent
 WEB_DIR = APP_HOME / "web"
@@ -37,6 +38,8 @@ TAILORED_DIR = RESUME_DIR / "tailored"
 BUILD_DIR = RESUME_DIR / "build"
 MASTER_TEX = RESUME_DIR / "master-resume.tex"
 JOB_BOARD_PATH = DATA_DIR / "job-board.json"
+JOB_PHOTOS_PATH = DATA_DIR / "job-photos.json"
+PHOTOS_LOCK = threading.Lock()
 
 PREPARE_LOCK = threading.Lock()
 PREPARE_JOBS = {}  # job_id -> {"status": "running"|"done"|"error", "output": str, "started": float}
@@ -217,6 +220,86 @@ def save_job_board(jobs):
     JOB_BOARD_PATH.write_text(json.dumps(jobs, indent=2) + "\n")
 
 
+def load_job_photos():
+    if not JOB_PHOTOS_PATH.exists():
+        return {}
+    return json.loads(JOB_PHOTOS_PATH.read_text())
+
+
+def save_job_photos(cache):
+    JOB_PHOTOS_PATH.write_text(json.dumps(cache, indent=2) + "\n")
+
+
+def fetch_og_image(url, timeout=6):
+    """Fetch a job posting's page and pull its og:image (or twitter:image)
+    meta tag — a real, company/posting-specific share image where the site
+    provides one. Returns None on any failure (dead link, timeout, no tag)."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            html = resp.read(300000).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    for prop in ("og:image", "twitter:image"):
+        m = re.search(
+            rf'<meta[^>]+(?:property|name)=["\']{re.escape(prop)}["\'][^>]+content=["\']([^"\']+)["\']',
+            html, re.I,
+        )
+        if not m:
+            m = re.search(
+                rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{re.escape(prop)}["\']',
+                html, re.I,
+            )
+        if m and m.group(1):
+            resolved = urljoin(url, m.group(1))  # some sites give a relative path
+            if urlparse(resolved).scheme in ("http", "https") and "missing.png" not in resolved:
+                return resolved
+    return None
+
+
+# Confirmed-generic images (verified by hand: same asset served for every
+# listing on that platform, not specific to any one company) — skip these
+# from the first occurrence rather than waiting for the repeat-detector below
+# to catch them after they've already shown up on 2-3 unrelated cards.
+KNOWN_GENERIC_IMAGES = {
+    "https://jobright.ai/newimages/seo_logo.png",
+}
+
+
+def is_generic_image(cache, image_url, company):
+    """An image that shows up for several *different* companies is site
+    branding (an ATS aggregator's own share image), not a real per-company
+    photo — showing it would misrepresent it as job-specific when it isn't."""
+    if image_url in KNOWN_GENERIC_IMAGES:
+        return True
+    other_companies = {
+        entry.get("company") for entry in cache.values()
+        if entry.get("image") == image_url and entry.get("company") != company
+    }
+    return len(other_companies) >= 2
+
+
+def get_or_fetch_job_photo(job):
+    with PHOTOS_LOCK:
+        cache = load_job_photos()
+        existing = cache.get(job["id"])
+        if existing is not None:
+            return existing.get("image")
+
+    image = fetch_og_image(job["link"]) if job.get("link") else None
+
+    with PHOTOS_LOCK:
+        cache = load_job_photos()
+        if image and is_generic_image(cache, image, job["company"]):
+            image = None
+        cache[job["id"]] = {"image": image, "company": job["company"]}
+        save_job_photos(cache)
+    return image
+
+
 def update_job_status(job_id, new_status):
     jobs = load_job_board()
     found = False
@@ -353,6 +436,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/jobs":
                 return self._send_json({"jobs": load_job_board()})
 
+            if path == "/api/jobs/photos":
+                cache = load_job_photos()
+                return self._send_json({jid: v.get("image") for jid, v in cache.items()})
+
             if path == "/api/resume":
                 return self._send_json({"resumes": list_resumes()})
 
@@ -402,6 +489,16 @@ class Handler(BaseHTTPRequestHandler):
                 job_id = m.group(1)
                 update_job_status(job_id, body["status"])
                 return self._send_json({"ok": True})
+
+            m = re.match(r"^/api/jobs/([^/]+)/photo$", path)
+            if m:
+                job_id = m.group(1)
+                jobs = load_job_board()
+                job = next((j for j in jobs if j["id"] == job_id), None)
+                if job is None:
+                    return self._send_json({"error": "job not found"}, 404)
+                image = get_or_fetch_job_photo(job)
+                return self._send_json({"image": image})
 
             if path == "/api/prepare":
                 job_id_in = body.get("job_id")

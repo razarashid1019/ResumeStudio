@@ -258,16 +258,19 @@ function statTile(value, label) {
 // ------------------------------------------------------------- job board --
 
 let jobFilter = "all";
-let selectedJobId = null;
+const PAGE_SIZE = 20; // cards per infinite-scroll batch
+let photoCache = {}; // job_id -> image url | null | undefined(not fetched yet)
+let jobsScrollHandler = null; // torn down and re-attached each render
 
 views.jobs = async function renderJobs() {
   const root = document.getElementById("view-jobs");
   root.innerHTML = `<h1 class="page-title">Job Board</h1><p class="page-subtitle">Loading…</p>`;
-  const { jobs } = await api("/api/jobs");
+  const [{ jobs }, photos] = await Promise.all([api("/api/jobs"), api("/api/jobs/photos")]);
+  photoCache = photos;
 
   root.innerHTML = "";
   root.appendChild(el("h1", { class: "page-title" }, "Job Board"));
-  root.appendChild(el("p", { class: "page-subtitle" }, `${jobs.length} postings — browse the list, click one to read the full posting.`));
+  root.appendChild(el("p", { class: "page-subtitle" }, `${jobs.length} postings — scroll for more.`));
 
   const filters = ["all", ...JOB_STATUSES];
   const filterRow = el("div", { class: "filter-row" });
@@ -285,52 +288,88 @@ views.jobs = async function renderJobs() {
     return;
   }
 
-  // Split-pane (list + inline detail) needs real room for both columns.
-  // Below that, Indeed itself falls back to a single scrolling list with
-  // the full posting opening on tap — same fallback here, via the modal.
-  const wide = window.innerWidth >= 1050;
+  const grid = el("div", { class: "photo-grid" });
+  root.appendChild(grid);
 
-  if (!wide) {
-    const list = el("div", { class: "job-row-list" });
-    shown.forEach((j) => list.appendChild(jobListRow(j, { onClick: () => openJobDetail(j) })));
-    root.appendChild(list);
-    return;
+  const contentEl = document.querySelector(".content");
+  if (jobsScrollHandler) contentEl.removeEventListener("scroll", jobsScrollHandler);
+
+  let loaded = 0;
+  function loadMore() {
+    if (loaded >= shown.length) return;
+    const next = shown.slice(loaded, loaded + PAGE_SIZE);
+    next.forEach((j) => grid.appendChild(photoCard(j)));
+    loaded += next.length;
+    if (loaded >= shown.length) contentEl.removeEventListener("scroll", jobsScrollHandler);
   }
 
-  if (!shown.some((j) => j.id === selectedJobId)) selectedJobId = shown[0].id;
+  jobsScrollHandler = () => {
+    if (document.body.dataset.view !== "jobs") {
+      contentEl.removeEventListener("scroll", jobsScrollHandler);
+      return;
+    }
+    if (contentEl.scrollTop + contentEl.clientHeight >= contentEl.scrollHeight - 900) loadMore();
+  };
 
-  const listCol = el("div", { class: "job-list-col" });
-  const detailCol = el("div", { class: "job-detail-col" });
-
-  function renderList() {
-    listCol.innerHTML = "";
-    shown.forEach((j) => {
-      listCol.appendChild(jobListRow(j, {
-        selected: j.id === selectedJobId,
-        onClick: () => { selectedJobId = j.id; renderList(); renderDetail(); },
-      }));
-    });
-  }
-  function renderDetail() {
-    const job = shown.find((j) => j.id === selectedJobId);
-    detailCol.innerHTML = "";
-    if (job) detailCol.appendChild(buildJobDetailNode(job, { onChanged: () => views.jobs() }));
-  }
-
-  renderList();
-  renderDetail();
-  root.appendChild(el("div", { class: "job-split" }, [listCol, detailCol]));
+  loadMore();
+  if (loaded < shown.length) contentEl.addEventListener("scroll", jobsScrollHandler);
 };
 
-// Re-layout the job board on resize (the split-pane/list-only breakpoint
-// depends on window width) — debounced, and only while that view is showing.
-let jobsResizeTimer;
-window.addEventListener("resize", () => {
-  clearTimeout(jobsResizeTimer);
-  jobsResizeTimer = setTimeout(() => {
-    if (document.body.dataset.view === "jobs") views.jobs();
-  }, 200);
-});
+function photoCard(job) {
+  const card = el("div", { class: "photo-card" });
+
+  const image = el("div", { class: "photo-card-image" });
+  applyCardImage(image, job);
+  image.appendChild(el("span", { class: pillClass(job.status) }, job.status.replace(/_/g, " ")));
+  card.appendChild(image);
+
+  const body = el("div", { class: "photo-card-body" });
+  body.appendChild(el("div", { class: "photo-card-role" }, job.role || job.company));
+  body.appendChild(el("div", { class: "photo-card-company" }, job.company));
+
+  const metaBits = [splitLocations(job.location).join(" · "), job.comp, daysAgo(job.date_added)].filter(Boolean);
+  if (metaBits.length) body.appendChild(el("div", { class: "job-row-meta" }, metaBits.join(" · ")));
+
+  const snippet = job.why || job.notes;
+  if (snippet) body.appendChild(el("div", { class: "job-row-snippet" }, snippet));
+  if (job.red_flags && job.red_flags.length) {
+    body.appendChild(el("div", { class: "job-row-flag" }, "⚠ " + job.red_flags[0]));
+  }
+  card.appendChild(body);
+
+  card.addEventListener("click", () => openJobDetail(job));
+  return card;
+}
+
+// Sets the card's photo area: a real per-company image if already cached,
+// otherwise the colored-initials treatment immediately, upgrading in place
+// if a background fetch turns up a real (non-generic) image.
+function applyCardImage(imageEl, job) {
+  const cached = photoCache[job.id];
+  if (cached) {
+    imageEl.style.backgroundImage = `url(${cached})`;
+    return;
+  }
+  const initials = el("div", { class: "photo-card-initials" }, companyInitials(job.company));
+  imageEl.classList.add("photo-card-image-fallback");
+  imageEl.style.background = AVATAR_COLORS[hashStr(job.company || "?") % AVATAR_COLORS.length];
+  imageEl.appendChild(initials);
+
+  if (cached === undefined && job.link) {
+    photoCache[job.id] = null; // mark in-flight so we don't fetch twice
+    api(`/api/jobs/${job.id}/photo`, { method: "POST" })
+      .then(({ image }) => {
+        photoCache[job.id] = image;
+        if (image) {
+          initials.remove();
+          imageEl.classList.remove("photo-card-image-fallback");
+          imageEl.style.background = "";
+          imageEl.style.backgroundImage = `url(${image})`;
+        }
+      })
+      .catch(() => {});
+  }
+}
 
 function jobListRow(job, { selected, onClick } = {}) {
   const row = el("div", { class: "job-row" + (selected ? " selected" : "") });
