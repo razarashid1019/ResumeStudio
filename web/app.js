@@ -203,6 +203,7 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
 function switchView(name) {
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
+  document.body.dataset.view = name;
   views[name] && views[name]();
 }
 

@@ -59,6 +59,29 @@ mkdir AppIcon.iconset && for s in 16 32 64 128 256 512 1024; do sips -z $s $s Ap
 iconutil -c icns AppIcon.iconset -o ResumeStudio.app/Contents/Resources/AppIcon.icns
 ```
 
+## `shell/` — native window shell (blocked on this machine, not wired up)
+
+`shell/ResumeStudioShell.swift` is a small AppKit + WKWebView program that would replace
+the Chrome-app-mode launcher with a real native window (own Dock icon, no Chrome
+dependency) — the same technique used by
+[Christian-Katzmann/app-it](https://github.com/Christian-Katzmann/app-it) (verified via
+the `trending-skill-finder` skill, 217 stars). It's currently **not compilable on this
+machine**: `swiftc` fails with `redefinition of module 'SwiftBridging'`, a known Xcode
+Command Line Tools corruption/version-mismatch issue, unrelated to this code. Fix
+requires reinstalling Command Line Tools (`sudo rm -rf /Library/Developer/CommandLineTools
+&& xcode-select --install`) — a system-level, sudo-gated change, so it's left for you to
+run if/when you want this. Once `swiftc shell/ResumeStudioShell.swift -o
+ResumeStudio.app/Contents/Resources/ResumeStudioShell` succeeds, swap the launcher's
+`open -na "Google Chrome" ...` line for exec-ing that binary instead.
+
+## Design system note: per-section accent color
+
+Each nav item / page title takes on a distinct accent color per view (`--view-dashboard`,
+`--view-jobs`, etc. in `styles.css`, applied via `body[data-view]`) instead of one repeated
+blue everywhere. This was a deliberate fix against "uniform SaaS card kit" sameness — the
+colors are pulled from the existing status-pill palette so it still reads as one coherent
+system, not an arbitrary rainbow.
+
 ## What's deliberately NOT built
 
 - No auto-submission of applications anywhere — "Prepare Application" tailors a
