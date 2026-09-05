@@ -1,0 +1,39 @@
+#!/bin/bash
+# ResumeStudio launcher — starts the local server if needed, opens an app-mode window.
+set -e
+
+APP_HOME="/Users/razarashid/ResumeStudio"
+PORT=8765
+URL="http://127.0.0.1:${PORT}"
+PID_FILE="$APP_HOME/data/server.pid"
+SERVER_LOG="$APP_HOME/data/server.log"
+PYTHON_BIN="/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
+
+is_server_up() {
+  curl -s -o /dev/null -m 1 "$URL/api/applications"
+}
+
+if ! is_server_up; then
+  # stale pid file cleanup
+  if [ -f "$PID_FILE" ]; then
+    OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+      kill "$OLD_PID" 2>/dev/null || true
+      sleep 0.3
+    fi
+    rm -f "$PID_FILE"
+  fi
+  nohup "$PYTHON_BIN" "$APP_HOME/server/app.py" >> "$SERVER_LOG" 2>&1 &
+  disown
+
+  for i in $(seq 1 30); do
+    if is_server_up; then break; fi
+    sleep 0.2
+  done
+fi
+
+if [ -d "/Applications/Google Chrome.app" ]; then
+  open -na "Google Chrome" --args --app="$URL"
+else
+  open "$URL"
+fi

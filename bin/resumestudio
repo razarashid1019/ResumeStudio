@@ -1,0 +1,23 @@
+#!/bin/bash
+# Simple CLI helper for the ResumeStudio server (the .app launcher doesn't need this).
+APP_HOME="/Users/razarashid/ResumeStudio"
+
+case "$1" in
+  start)
+    open "$APP_HOME/ResumeStudio.app"
+    ;;
+  stop)
+    pkill -f "$APP_HOME/server/app.py" 2>/dev/null && echo "stopped" || echo "not running"
+    rm -f "$APP_HOME/data/server.pid"
+    ;;
+  status)
+    if curl -s -o /dev/null -m 1 "http://127.0.0.1:8765/api/applications"; then
+      echo "running on http://127.0.0.1:8765"
+    else
+      echo "not running"
+    fi
+    ;;
+  *)
+    echo "usage: resumestudio [start|stop|status]"
+    ;;
+esac

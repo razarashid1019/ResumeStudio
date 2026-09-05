@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+"""ResumeStudio local server.
+
+Stdlib-only Python HTTP server that reads/writes the existing markdown-based
+job-search data in the ResumeSkills repo (resume/applications/*.md,
+resume/tailored/*.tex, resume/build/*.pdf) plus the app's own job-board.json,
+and serves the ResumeStudio frontend. Binds to 127.0.0.1 only.
+"""
+import difflib
+import json
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+import uuid
+from datetime import date
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+APP_HOME = Path(__file__).resolve().parent.parent
+WEB_DIR = APP_HOME / "web"
+DATA_DIR = APP_HOME / "data"
+LOG_DIR = DATA_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+SETTINGS = json.loads((DATA_DIR / "settings.json").read_text())
+REPO_PATH = Path(SETTINGS["repo_path"])
+PORT = int(SETTINGS.get("port", 8765))
+
+RESUME_DIR = REPO_PATH / "resume"
+APPLICATIONS_DIR = RESUME_DIR / "applications"
+README_PATH = APPLICATIONS_DIR / "README.md"
+TAILORED_DIR = RESUME_DIR / "tailored"
+BUILD_DIR = RESUME_DIR / "build"
+MASTER_TEX = RESUME_DIR / "master-resume.tex"
+JOB_BOARD_PATH = DATA_DIR / "job-board.json"
+
+PREPARE_LOCK = threading.Lock()
+PREPARE_JOBS = {}  # job_id -> {"status": "running"|"done"|"error", "output": str, "started": float}
+
+STATUS_LEGEND = [
+    "Staged — not submitted",
+    "Applied",
+    "OA / Screen",
+    "Interview",
+    "Offer",
+    "Rejected",
+    "Withdrawn",
+]
+
+# ---------------------------------------------------------------- parsing --
+
+def parse_readme_table():
+    """Parse resume/applications/README.md's pipe-table into structured rows."""
+    if not README_PATH.exists():
+        return []
+    text = README_PATH.read_text()
+    lines = text.splitlines()
+    rows = []
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("| Company"):
+            in_table = True
+            continue
+        if in_table and re.match(r"^\|[\s:|-]+\|$", stripped):
+            continue  # header separator row
+        if in_table:
+            if not stripped.startswith("|"):
+                break
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if len(cells) < 7:
+                continue
+            company, role, location, status, date_applied, resume_used, detail = cells[:7]
+            m = re.search(r"\[([^\]]+)\]\(\./([^)]+)\)", detail)
+            detail_file = m.group(2) if m else None
+            resume_m = re.search(r"`([^`]+)`", resume_used)
+            resume_used_clean = resume_m.group(1) if resume_m else resume_used
+            rows.append({
+                "company": company,
+                "role": role,
+                "location": location,
+                "status": status,
+                "date_applied": date_applied,
+                "resume_used": resume_used_clean,
+                "detail_file": detail_file,
+            })
+    return rows
+
+
+def parse_detail_file(filename):
+    """Parse resume/applications/<file>.md into a header field block + sections."""
+    path = APPLICATIONS_DIR / filename
+    if not path.exists():
+        return None
+    text = path.read_text()
+    lines = text.splitlines()
+    title = lines[0].lstrip("#").strip() if lines else filename
+
+    # split into header-field block (before first "## ") and sections
+    first_section_idx = len(lines)
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            first_section_idx = i
+            break
+
+    header_lines = lines[1:first_section_idx]
+    fields = {}
+    intro_lines = []
+    for line in header_lines:
+        m = re.match(r"^\*\*(.+?):\*\*\s*(.*)$", line.strip())
+        if m:
+            key = m.group(1).strip().lower().replace(" ", "_")
+            fields[key] = m.group(2).strip()
+        elif line.strip():
+            intro_lines.append(line)
+
+    sections = []
+    current_heading = None
+    current_body = []
+    for line in lines[first_section_idx:]:
+        m = re.match(r"^## (.+)$", line)
+        if m:
+            if current_heading is not None:
+                sections.append({"heading": current_heading, "body": "\n".join(current_body).strip()})
+            current_heading = m.group(1).strip()
+            current_body = []
+        else:
+            current_body.append(line)
+    if current_heading is not None:
+        sections.append({"heading": current_heading, "body": "\n".join(current_body).strip()})
+
+    return {
+        "title": title,
+        "fields": fields,
+        "intro": "\n".join(intro_lines).strip(),
+        "sections": sections,
+        "raw": text,
+    }
+
+
+def update_readme_status(company, new_status, date_applied=None):
+    """Line-targeted edit: change only the Status (and optionally Date Applied)
+    cell of the one row matching `company`. Never rewrites the rest of the file."""
+    if new_status not in STATUS_LEGEND:
+        raise ValueError(f"Unknown status: {new_status}")
+    if not README_PATH.exists():
+        raise FileNotFoundError(README_PATH)
+
+    shutil.copy(README_PATH, README_PATH.with_suffix(".md.bak"))
+
+    lines = README_PATH.read_text().splitlines(keepends=False)
+    changed = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("|") or stripped.startswith("| Company") or re.match(r"^\|[\s:|-]+\|$", stripped):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) < 7:
+            continue
+        if cells[0].lower() == company.lower():
+            cells[3] = new_status
+            if date_applied:
+                cells[4] = date_applied
+            lines[i] = "| " + " | ".join(cells) + " |"
+            changed = True
+            break
+
+    if not changed:
+        raise ValueError(f"No application row found for company: {company}")
+
+    README_PATH.write_text("\n".join(lines) + "\n")
+    return True
+
+
+def list_resumes():
+    results = []
+    if not TAILORED_DIR.exists():
+        return results
+    for tex_path in sorted(TAILORED_DIR.glob("*.tex")):
+        slug = tex_path.stem
+        pdf_path = BUILD_DIR / f"{slug}.pdf"
+        results.append({
+            "slug": slug,
+            "has_pdf": pdf_path.exists(),
+            "pdf_size": pdf_path.stat().st_size if pdf_path.exists() else None,
+            "mtime": tex_path.stat().st_mtime,
+        })
+    return results
+
+
+def diff_resume(slug):
+    tailored_path = TAILORED_DIR / f"{slug}.tex"
+    if not tailored_path.exists() or not MASTER_TEX.exists():
+        return None
+    master_lines = MASTER_TEX.read_text().splitlines(keepends=True)
+    tailored_lines = tailored_path.read_text().splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        master_lines, tailored_lines,
+        fromfile="master-resume.tex", tofile=f"{slug}.tex",
+    )
+    return "".join(diff)
+
+
+# ------------------------------------------------------------- job board --
+
+def load_job_board():
+    if not JOB_BOARD_PATH.exists():
+        return []
+    return json.loads(JOB_BOARD_PATH.read_text())
+
+
+def save_job_board(jobs):
+    JOB_BOARD_PATH.write_text(json.dumps(jobs, indent=2) + "\n")
+
+
+def update_job_status(job_id, new_status):
+    jobs = load_job_board()
+    found = False
+    for job in jobs:
+        if job["id"] == job_id:
+            job["status"] = new_status
+            found = True
+            break
+    if not found:
+        raise ValueError(f"No job found with id: {job_id}")
+    save_job_board(jobs)
+    return True
+
+
+# -------------------------------------------------------- prepare (agent) --
+
+def build_prepare_prompt(job):
+    why = job.get("why") or "(no prior research notes — use the job posting itself)"
+    red_flags = job.get("red_flags") or []
+    red_flag_text = ("\nKnown red flags to account for: " + "; ".join(red_flags)) if red_flags else ""
+    return f"""Follow the exact conventions already established in this repo for preparing a job
+application package. Read resume/README.md and resume/applications/README.md first to confirm
+the conventions, and use resume/applications/notion.md and resume/applications/stripe.md as
+structural reference examples for the detail file.
+
+Company: {job.get('company')}
+Role: {job.get('role')}
+Location: {job.get('location') or 'unknown — check the posting'}
+Job URL: {job.get('link') or 'none on file — do not guess one'}
+Why this role (prior research): {why}{red_flag_text}
+
+Do the following, in order:
+1. Read resume/master-resume.tex and the relevant files in resume/experience/ for source material.
+2. Create a new tailored resume at resume/tailored/<slug>.tex as a PURE REORDER of
+   master-resume.tex content only — same rule as every other tailored resume in this repo:
+   no invented scope, no new metrics, no reworded bullets, reordering only. Pick a slug
+   consistent with the existing naming pattern (e.g. company-role.tex).
+3. Compile it with latexmk to resume/build/<slug>.pdf and confirm it is exactly 1 page.
+4. Write resume/applications/<company-slug>.md following the exact section structure used in
+   notion.md and stripe.md (Status / Location / Job URL / Resume used / Compensation header
+   block, then "## Why this role (match rationale)", "## Application form answers submitted"
+   with draft best-guess answers clearly flagged for Raza's review before submission, "## Other
+   form answers", and "## Interview prep notes" with STAR-ready stories).
+5. Add exactly one new row to resume/applications/README.md's tracker table with
+   Status = "Staged — not submitted" and today's date, matching the table's existing column
+   format precisely. Do not alter any other row or any other part of the file.
+6. Do not open a browser, fill out any external form, or submit anything anywhere — this task
+   only produces local files for Raza to review before he applies himself.
+
+When done, print a short summary of exactly what you created."""
+
+
+def run_prepare_job(job_id, job):
+    log_path = LOG_DIR / f"{job_id}.log"
+    prompt = build_prepare_prompt(job)
+    allowed_tools = "Read Write Edit Glob Grep Bash(latexmk*) Bash(pdflatex*)"
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--allowed-tools", allowed_tools],
+            cwd=str(REPO_PATH),
+            capture_output=True,
+            text=True,
+            timeout=1200,
+        )
+        output = proc.stdout + ("\n[stderr]\n" + proc.stderr if proc.stderr else "")
+        with PREPARE_LOCK:
+            PREPARE_JOBS[job_id]["status"] = "done" if proc.returncode == 0 else "error"
+            PREPARE_JOBS[job_id]["output"] = output
+        log_path.write_text(output)
+        if proc.returncode == 0:
+            update_job_status(job["id"], "ready_to_apply")
+    except Exception as exc:  # noqa: BLE001
+        with PREPARE_LOCK:
+            PREPARE_JOBS[job_id]["status"] = "error"
+            PREPARE_JOBS[job_id]["output"] = f"Failed to run: {exc}"
+        log_path.write_text(f"Failed to run: {exc}")
+
+
+# -------------------------------------------------------------- HTTP glue --
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "ResumeStudio/1.0"
+
+    def log_message(self, fmt, *args):
+        pass  # keep the terminal quiet; errors still surface via 5xx responses
+
+    def _send_json(self, payload, status=200):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_file(self, path, content_type):
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _read_json_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            return {}
+        return json.loads(self.rfile.read(length))
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        try:
+            if path == "/" or path == "/index.html":
+                return self._send_file(WEB_DIR / "index.html", "text/html")
+            if path == "/app.js":
+                return self._send_file(WEB_DIR / "app.js", "application/javascript")
+            if path == "/styles.css":
+                return self._send_file(WEB_DIR / "styles.css", "text/css")
+
+            if path == "/api/applications":
+                return self._send_json({"rows": parse_readme_table(), "legend": STATUS_LEGEND})
+
+            m = re.match(r"^/api/applications/([^/]+)$", path)
+            if m:
+                filename = m.group(1)
+                if not filename.endswith(".md"):
+                    filename += ".md"
+                detail = parse_detail_file(filename)
+                if detail is None:
+                    return self._send_json({"error": "not found"}, 404)
+                return self._send_json(detail)
+
+            if path == "/api/jobs":
+                return self._send_json({"jobs": load_job_board()})
+
+            if path == "/api/resume":
+                return self._send_json({"resumes": list_resumes()})
+
+            m = re.match(r"^/api/resume/pdf/([^/]+)$", path)
+            if m:
+                slug = m.group(1).replace(".pdf", "")
+                pdf_path = BUILD_DIR / f"{slug}.pdf"
+                if not pdf_path.exists():
+                    return self._send_json({"error": "not found"}, 404)
+                return self._send_file(pdf_path, "application/pdf")
+
+            m = re.match(r"^/api/resume/diff/([^/]+)$", path)
+            if m:
+                slug = m.group(1).replace(".tex", "")
+                diff = diff_resume(slug)
+                if diff is None:
+                    return self._send_json({"error": "not found"}, 404)
+                return self._send_json({"diff": diff})
+
+            m = re.match(r"^/api/prepare/([^/]+)/log$", path)
+            if m:
+                job_id = m.group(1)
+                with PREPARE_LOCK:
+                    info = PREPARE_JOBS.get(job_id)
+                if info is None:
+                    return self._send_json({"error": "not found"}, 404)
+                return self._send_json(info)
+
+            return self._send_json({"error": "not found"}, 404)
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json({"error": str(exc)}, 500)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        try:
+            body = self._read_json_body()
+
+            m = re.match(r"^/api/applications/([^/]+)/status$", path)
+            if m:
+                company = m.group(1)
+                update_readme_status(company, body["status"], body.get("date_applied"))
+                return self._send_json({"ok": True})
+
+            m = re.match(r"^/api/jobs/([^/]+)/status$", path)
+            if m:
+                job_id = m.group(1)
+                update_job_status(job_id, body["status"])
+                return self._send_json({"ok": True})
+
+            if path == "/api/prepare":
+                job_id_in = body.get("job_id")
+                jobs = load_job_board()
+                job = next((j for j in jobs if j["id"] == job_id_in), None)
+                if job is None:
+                    return self._send_json({"error": "job not found"}, 404)
+                run_id = uuid.uuid4().hex[:12]
+                with PREPARE_LOCK:
+                    PREPARE_JOBS[run_id] = {"status": "running", "output": "", "started": time.time()}
+                update_job_status(job_id_in, "preparing")
+                thread = threading.Thread(target=run_prepare_job, args=(run_id, job), daemon=True)
+                thread.start()
+                return self._send_json({"run_id": run_id})
+
+            return self._send_json({"error": "not found"}, 404)
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json({"error": str(exc)}, 500)
+
+
+def main():
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    pid_path = DATA_DIR / "server.pid"
+    pid_path.write_text(str(os.getpid()))
+    print(f"ResumeStudio server running on http://127.0.0.1:{PORT}")
+    try:
+        server.serve_forever()
+    finally:
+        if pid_path.exists():
+            pid_path.unlink()
+
+
+if __name__ == "__main__":
+    main()
