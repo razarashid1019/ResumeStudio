@@ -259,17 +259,23 @@ function statTile(value, label) {
 
 let jobFilter = "all";
 const PAGE_SIZE = 20; // cards per infinite-scroll batch
-let photoCache = {}; // job_id -> image url | null | undefined(not fetched yet)
+let streetviewCache = {}; // job_id -> true|false|undefined(not checked yet)
+let mapsKeyConfigured = false;
 let jobsScrollHandler = null; // torn down and re-attached each render
 
 views.jobs = async function renderJobs() {
   const root = document.getElementById("view-jobs");
   root.innerHTML = `<h1 class="page-title">Job Board</h1><p class="page-subtitle">Loading…</p>`;
-  const [{ jobs }, photos] = await Promise.all([api("/api/jobs"), api("/api/jobs/photos")]);
-  photoCache = photos;
+  const [{ jobs }, svStatus] = await Promise.all([api("/api/jobs"), api("/api/jobs/streetview-status")]);
+  streetviewCache = svStatus.status;
+  mapsKeyConfigured = svStatus.maps_key_configured;
 
   root.innerHTML = "";
   root.appendChild(el("h1", { class: "page-title" }, "Job Board"));
+  if (!mapsKeyConfigured) {
+    root.appendChild(el("div", { class: "job-flags", style: "margin-bottom:16px;" },
+      "No Google Maps API key configured yet — cards show placeholders until one's added to data/secrets.json."));
+  }
   root.appendChild(el("p", { class: "page-subtitle" }, `${jobs.length} postings — scroll for more.`));
 
   const filters = ["all", ...JOB_STATUSES];
@@ -341,13 +347,16 @@ function photoCard(job) {
   return card;
 }
 
-// Sets the card's photo area: a real per-company image if already cached,
-// otherwise the colored-initials treatment immediately, upgrading in place
-// if a background fetch turns up a real (non-generic) image.
+// Sets the card's photo area to a real Street View image of the company's
+// actual workplace when one's known to exist, otherwise a colored-initials
+// placeholder — upgraded in place if a background check finds real imagery.
+// (Deliberately not falling back to a scraped og:image/logo here — showing
+// a logo as if it were "a picture of where you'd be working" would be the
+// same kind of misleading substitution already ruled out for ATS icons.)
 function applyCardImage(imageEl, job) {
-  const cached = photoCache[job.id];
-  if (cached) {
-    imageEl.style.backgroundImage = `url(${cached})`;
+  const known = streetviewCache[job.id];
+  if (known === true) {
+    imageEl.style.backgroundImage = `url(/api/jobs/streetview/${job.id}.jpg)`;
     return;
   }
   const initials = el("div", { class: "photo-card-initials" }, companyInitials(job.company));
@@ -355,16 +364,16 @@ function applyCardImage(imageEl, job) {
   imageEl.style.background = AVATAR_COLORS[hashStr(job.company || "?") % AVATAR_COLORS.length];
   imageEl.appendChild(initials);
 
-  if (cached === undefined && job.link) {
-    photoCache[job.id] = null; // mark in-flight so we don't fetch twice
-    api(`/api/jobs/${job.id}/photo`, { method: "POST" })
-      .then(({ image }) => {
-        photoCache[job.id] = image;
-        if (image) {
+  if (known === undefined && mapsKeyConfigured) {
+    streetviewCache[job.id] = false; // mark checked so we don't fetch twice
+    api(`/api/jobs/${job.id}/streetview`, { method: "POST" })
+      .then(({ available }) => {
+        streetviewCache[job.id] = available;
+        if (available) {
           initials.remove();
           imageEl.classList.remove("photo-card-image-fallback");
           imageEl.style.background = "";
-          imageEl.style.backgroundImage = `url(${image})`;
+          imageEl.style.backgroundImage = `url(/api/jobs/streetview/${job.id}.jpg)`;
         }
       })
       .catch(() => {});

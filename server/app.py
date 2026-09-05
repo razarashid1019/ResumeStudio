@@ -19,7 +19,7 @@ import uuid
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 APP_HOME = Path(__file__).resolve().parent.parent
 WEB_DIR = APP_HOME / "web"
@@ -40,6 +40,21 @@ MASTER_TEX = RESUME_DIR / "master-resume.tex"
 JOB_BOARD_PATH = DATA_DIR / "job-board.json"
 JOB_PHOTOS_PATH = DATA_DIR / "job-photos.json"
 PHOTOS_LOCK = threading.Lock()
+
+SECRETS_PATH = DATA_DIR / "secrets.json"
+STREETVIEW_CACHE_DIR = DATA_DIR / "streetview_cache"
+STREETVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+STREETVIEW_STATUS_PATH = DATA_DIR / "streetview_status.json"  # job_id -> bool (has real imagery)
+STREETVIEW_LOCK = threading.Lock()
+
+
+def get_maps_api_key():
+    if not SECRETS_PATH.exists():
+        return ""
+    try:
+        return json.loads(SECRETS_PATH.read_text()).get("google_maps_api_key", "")
+    except Exception:
+        return ""
 
 PREPARE_LOCK = threading.Lock()
 PREPARE_JOBS = {}  # job_id -> {"status": "running"|"done"|"error", "output": str, "started": float}
@@ -300,6 +315,66 @@ def get_or_fetch_job_photo(job):
     return image
 
 
+def load_streetview_status():
+    if not STREETVIEW_STATUS_PATH.exists():
+        return {}
+    return json.loads(STREETVIEW_STATUS_PATH.read_text())
+
+
+def save_streetview_status(status):
+    STREETVIEW_STATUS_PATH.write_text(json.dumps(status, indent=2) + "\n")
+
+
+def get_or_fetch_streetview(job):
+    """Real photo of the actual workplace, via Google Street View — the
+    literal answer to "a picture of where I'd be working," as opposed to a
+    logo or generic share-image. Checks the (free) metadata endpoint first
+    to confirm real imagery exists before spending a billed image request,
+    and caches the resulting JPEG to disk so each address is ever queried
+    once, not on every page load."""
+    api_key = get_maps_api_key()
+    if not api_key:
+        return None
+
+    with STREETVIEW_LOCK:
+        status = load_streetview_status()
+        cached = status.get(job["id"])
+    cache_file = STREETVIEW_CACHE_DIR / f"{job['id']}.jpg"
+    if cached is True and cache_file.exists():
+        return True
+    if cached is False:
+        return False
+
+    query = quote(f"{job['company']}, {job.get('location') or ''}".strip(", "))
+    meta_url = f"https://maps.googleapis.com/maps/api/streetview/metadata?location={query}&key={api_key}"
+    try:
+        with urllib.request.urlopen(meta_url, timeout=6) as resp:
+            meta = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None  # transient failure — don't cache, worth retrying later
+
+    found = meta.get("status") == "OK"
+    with STREETVIEW_LOCK:
+        status = load_streetview_status()
+        status[job["id"]] = found
+        save_streetview_status(status)
+
+    if not found:
+        return False
+
+    image_url = f"https://maps.googleapis.com/maps/api/streetview?size=640x400&fov=90&location={query}&key={api_key}"
+    try:
+        with urllib.request.urlopen(image_url, timeout=8) as resp:
+            cache_file.write_bytes(resp.read())
+        return True
+    except Exception:
+        with STREETVIEW_LOCK:
+            status = load_streetview_status()
+            status[job["id"]] = False
+            save_streetview_status(status)
+        return False
+
+
 def update_job_status(job_id, new_status):
     jobs = load_job_board()
     found = False
@@ -440,6 +515,20 @@ class Handler(BaseHTTPRequestHandler):
                 cache = load_job_photos()
                 return self._send_json({jid: v.get("image") for jid, v in cache.items()})
 
+            if path == "/api/jobs/streetview-status":
+                return self._send_json({
+                    "maps_key_configured": bool(get_maps_api_key()),
+                    "status": load_streetview_status(),
+                })
+
+            m = re.match(r"^/api/jobs/streetview/([^/]+)\.jpg$", path)
+            if m:
+                job_id = m.group(1)
+                img_path = STREETVIEW_CACHE_DIR / f"{job_id}.jpg"
+                if not img_path.exists():
+                    return self._send_json({"error": "not found"}, 404)
+                return self._send_file(img_path, "image/jpeg")
+
             if path == "/api/resume":
                 return self._send_json({"resumes": list_resumes()})
 
@@ -499,6 +588,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "job not found"}, 404)
                 image = get_or_fetch_job_photo(job)
                 return self._send_json({"image": image})
+
+            m = re.match(r"^/api/jobs/([^/]+)/streetview$", path)
+            if m:
+                job_id = m.group(1)
+                jobs = load_job_board()
+                job = next((j for j in jobs if j["id"] == job_id), None)
+                if job is None:
+                    return self._send_json({"error": "job not found"}, 404)
+                available = get_or_fetch_streetview(job)
+                return self._send_json({"available": bool(available)})
 
             if path == "/api/prepare":
                 job_id_in = body.get("job_id")
