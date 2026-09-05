@@ -261,21 +261,21 @@ let jobFilter = "all";
 const PAGE_SIZE = 20; // cards per infinite-scroll batch
 let streetviewCache = {}; // job_id -> true|false|undefined(not checked yet)
 let mapsKeyConfigured = false;
+let companyPhotoCache = {}; // company name -> image url | null | undefined(not checked yet)
 let jobsScrollHandler = null; // torn down and re-attached each render
 
 views.jobs = async function renderJobs() {
   const root = document.getElementById("view-jobs");
   root.innerHTML = `<h1 class="page-title">Job Board</h1><p class="page-subtitle">Loading…</p>`;
-  const [{ jobs }, svStatus] = await Promise.all([api("/api/jobs"), api("/api/jobs/streetview-status")]);
+  const [{ jobs }, svStatus, companyPhotos] = await Promise.all([
+    api("/api/jobs"), api("/api/jobs/streetview-status"), api("/api/company-photos"),
+  ]);
   streetviewCache = svStatus.status;
   mapsKeyConfigured = svStatus.maps_key_configured;
+  companyPhotoCache = companyPhotos;
 
   root.innerHTML = "";
   root.appendChild(el("h1", { class: "page-title" }, "Job Board"));
-  if (!mapsKeyConfigured) {
-    root.appendChild(el("div", { class: "job-flags", style: "margin-bottom:16px;" },
-      "No Google Maps API key configured yet — cards show placeholders until one's added to data/secrets.json."));
-  }
   root.appendChild(el("p", { class: "page-subtitle" }, `${jobs.length} postings — scroll for more.`));
 
   const filters = ["all", ...JOB_STATUSES];
@@ -347,36 +347,65 @@ function photoCard(job) {
   return card;
 }
 
-// Sets the card's photo area to a real Street View image of the company's
-// actual workplace when one's known to exist, otherwise a colored-initials
-// placeholder — upgraded in place if a background check finds real imagery.
-// (Deliberately not falling back to a scraped og:image/logo here — showing
-// a logo as if it were "a picture of where you'd be working" would be the
-// same kind of misleading substitution already ruled out for ATS icons.)
+// Photo priority: real Street View imagery of the workplace (only active
+// once a Google Maps API key is configured) → a real per-company image
+// from Wikipedia (free, no signup, usually a logo rather than a building
+// photo, but genuinely that company's) → colored initials. Never falls
+// back to the old scraped og:image/logo path for the hero photo — showing
+// a logo as if it were "a picture of where you'd be working" is exactly
+// the misleading substitution already ruled out for ATS favicons.
 function applyCardImage(imageEl, job) {
-  const known = streetviewCache[job.id];
-  if (known === true) {
+  // A colored backdrop under every image, cached or not — avoids a flash of
+  // blank/dark card while the browser is still downloading the real photo.
+  imageEl.style.background = AVATAR_COLORS[hashStr(job.company || "?") % AVATAR_COLORS.length];
+
+  if (streetviewCache[job.id] === true) {
     imageEl.style.backgroundImage = `url(/api/jobs/streetview/${job.id}.jpg)`;
     return;
   }
+  const wikiCached = companyPhotoCache[job.company];
+  if (wikiCached) {
+    imageEl.style.backgroundImage = `url(${wikiCached})`;
+    return;
+  }
+
   const initials = el("div", { class: "photo-card-initials" }, companyInitials(job.company));
   imageEl.classList.add("photo-card-image-fallback");
-  imageEl.style.background = AVATAR_COLORS[hashStr(job.company || "?") % AVATAR_COLORS.length];
   imageEl.appendChild(initials);
 
-  if (known === undefined && mapsKeyConfigured) {
+  function swapToImage(url) {
+    initials.remove();
+    imageEl.classList.remove("photo-card-image-fallback");
+    imageEl.style.background = "";
+    imageEl.style.backgroundImage = `url(${url})`;
+  }
+
+  function tryWikipedia() {
+    if (companyPhotoCache[job.company] !== undefined) return; // already resolved (or known-missing)
+    companyPhotoCache[job.company] = null;
+    api("/api/company-photos/lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ company: job.company }),
+    })
+      .then(({ image }) => {
+        companyPhotoCache[job.company] = image;
+        if (image) swapToImage(image);
+      })
+      .catch(() => {});
+  }
+
+  if (mapsKeyConfigured && streetviewCache[job.id] === undefined) {
     streetviewCache[job.id] = false; // mark checked so we don't fetch twice
     api(`/api/jobs/${job.id}/streetview`, { method: "POST" })
       .then(({ available }) => {
         streetviewCache[job.id] = available;
-        if (available) {
-          initials.remove();
-          imageEl.classList.remove("photo-card-image-fallback");
-          imageEl.style.background = "";
-          imageEl.style.backgroundImage = `url(/api/jobs/streetview/${job.id}.jpg)`;
-        }
+        if (available) swapToImage(`/api/jobs/streetview/${job.id}.jpg`);
+        else tryWikipedia();
       })
-      .catch(() => {});
+      .catch(() => tryWikipedia());
+  } else {
+    tryWikipedia();
   }
 }
 

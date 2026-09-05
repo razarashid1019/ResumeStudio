@@ -4,6 +4,7 @@ data/job-photos.json
 data/secrets.json
 data/streetview_cache/
 data/streetview_status.json
+data/wiki-image-cache.json
 data/server.pid
 data/server.log
 data/openclaw_raw.txt

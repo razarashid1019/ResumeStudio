@@ -375,6 +375,95 @@ def get_or_fetch_streetview(job):
         return False
 
 
+# ---------------------------------------------------- Wikipedia fallback --
+# No API key, no billing, no signup — Wikipedia/Wikimedia's API is fully
+# open. Keyed by company (not job id), since many postings share a company
+# and there's no reason to look it up more than once. Usually surfaces the
+# company's logo (that's what most company-article infoboxes use), not a
+# building photo — a real, honest, per-company image, just not literally
+# "the workplace" the way Street View would have been.
+WIKI_CACHE_PATH = DATA_DIR / "wiki-image-cache.json"
+WIKI_LOCK = threading.Lock()
+_WIKI_HEADERS = {"User-Agent": "ResumeStudio/1.0 (personal local app; contact: n/a)"}
+_wiki_last_request = 0.0
+_WIKI_MIN_INTERVAL = 0.3  # be a polite API citizen — avoid tripping rate limits on a burst
+
+
+def load_wiki_cache():
+    if not WIKI_CACHE_PATH.exists():
+        return {}
+    return json.loads(WIKI_CACHE_PATH.read_text())
+
+
+def save_wiki_cache(cache):
+    WIKI_CACHE_PATH.write_text(json.dumps(cache, indent=2) + "\n")
+
+
+def _wiki_get(url):
+    global _wiki_last_request
+    with WIKI_LOCK:
+        wait = _WIKI_MIN_INTERVAL - (time.time() - _wiki_last_request)
+        if wait > 0:
+            time.sleep(wait)
+        _wiki_last_request = time.time()
+    req = urllib.request.Request(url, headers=_WIKI_HEADERS)
+    with urllib.request.urlopen(req, timeout=6) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def fetch_wikipedia_image(company):
+    """Returns an image URL, or None for a genuine no-match (no search
+    result, disambiguation guard rejected it, or no infobox image). Network/
+    HTTP errors (rate limits, timeouts) propagate as exceptions instead of
+    silently becoming None — those are transient and must NOT be cached as
+    a permanent "no photo," or a single 429 poisons that company forever."""
+    # Appending "company" biases the search away from an unrelated article
+    # that happens to share the name (e.g. plain "Adobe" resolves to the
+    # building-material article, not Adobe Inc.) — cheap, standard technique,
+    # not foolproof but meaningfully better than a bare name search.
+    search = _wiki_get(
+        f"https://en.wikipedia.org/w/api.php?action=query&list=search"
+        f"&srsearch={quote(company + ' company')}&format=json&srlimit=1"
+    )
+    results = search.get("query", {}).get("search", [])
+    if not results:
+        return None
+    title = results[0]["title"]
+
+    # Guard against a wildly wrong disambiguation match (e.g. "Apex" the
+    # startup resolving to some unrelated "Apex" article) — require the
+    # company's first significant word to actually appear in the title.
+    first_word = re.sub(r"[^a-z0-9]", "", company.lower().split()[0]) if company.split() else ""
+    if first_word and first_word not in re.sub(r"[^a-z0-9]", "", title.lower()):
+        return None
+
+    images = _wiki_get(
+        f"https://en.wikipedia.org/w/api.php?action=query&titles={quote(title)}"
+        f"&prop=pageimages&format=json&pithumbsize=640"
+    )
+    for page in images.get("query", {}).get("pages", {}).values():
+        thumb = page.get("thumbnail", {}).get("source")
+        if thumb:
+            return thumb
+    return None
+
+
+def get_or_fetch_company_photo(company):
+    with WIKI_LOCK:
+        cache = load_wiki_cache()
+        if company in cache:
+            return cache[company]
+    try:
+        image = fetch_wikipedia_image(company)
+    except Exception:
+        return None  # transient failure (rate limit, timeout) — not cached, safe to retry later
+    with WIKI_LOCK:
+        cache = load_wiki_cache()
+        cache[company] = image
+        save_wiki_cache(cache)
+    return image
+
+
 def update_job_status(job_id, new_status):
     jobs = load_job_board()
     found = False
@@ -521,6 +610,9 @@ class Handler(BaseHTTPRequestHandler):
                     "status": load_streetview_status(),
                 })
 
+            if path == "/api/company-photos":
+                return self._send_json(load_wiki_cache())
+
             m = re.match(r"^/api/jobs/streetview/([^/]+)\.jpg$", path)
             if m:
                 job_id = m.group(1)
@@ -598,6 +690,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "job not found"}, 404)
                 available = get_or_fetch_streetview(job)
                 return self._send_json({"available": bool(available)})
+
+            if path == "/api/company-photos/lookup":
+                company = body.get("company")
+                if not company:
+                    return self._send_json({"error": "company required"}, 400)
+                image = get_or_fetch_company_photo(company)
+                return self._send_json({"image": image})
 
             if path == "/api/prepare":
                 job_id_in = body.get("job_id")
