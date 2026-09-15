@@ -8,6 +8,7 @@ and serves the ResumeStudio frontend. Binds to 127.0.0.1 only.
 """
 import difflib
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -22,7 +23,7 @@ from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
 
 APP_HOME = Path(__file__).resolve().parent.parent
-WEB_DIR = APP_HOME / "web"
+WEB_DIR = APP_HOME / "web-dist"  # Vite build output (frontend/, 2026-09-15 rewrite); see frontend/vite.config.ts's outDir
 DATA_DIR = APP_HOME / "data"
 LOG_DIR = DATA_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,6 +59,19 @@ def get_maps_api_key():
 
 PREPARE_LOCK = threading.Lock()
 PREPARE_JOBS = {}  # job_id -> {"status": "running"|"done"|"error", "output": str, "started": float}
+
+# The two cloud routines created 2026-09-15 (see resumestudio-app memory /
+# the /schedule conversation) -- hardcoded since there are only ever these
+# two and creating new ones isn't a dashboard action.
+ROUTINE_IDS = {
+    "digest": "trig_01NvD59Y3gTqpQP8tPNZtn5M",
+    "approval": "trig_01J8HbayG8GP4f6WfEhaH62c",
+}
+ROUTINES_CACHE_PATH = DATA_DIR / "routines_cache.json"
+ROUTINES_CACHE_TTL = 300  # seconds -- refresh in the background past this age
+ROUTINES_LOCK = threading.Lock()
+ROUTINES_REFRESHING = False
+ROUTINE_JOBS = {}  # run_id -> {"status": "running"|"done"|"error", "output": str}
 
 STATUS_LEGEND = [
     "Staged — not submitted",
@@ -570,6 +584,92 @@ def run_prepare_job(job_id, job):
         log_path.write_text(f"Failed to run: {exc}")
 
 
+# ------------------------------------------------------ routine control --
+# Same trick as "Prepare Application" above: shell out to `claude -p`.
+# Confirmed 2026-09-15 that a headless `claude -p` process DOES have the
+# RemoteTrigger tool available (unlike Gmail/browser tools, which it does
+# not) -- see resumestudio-app memory. Status is cached to disk and
+# refreshed in the background rather than on every page load, since each
+# `claude -p` round-trip takes 10-30+ seconds.
+
+def _extract_json(text):
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if m:
+        text = m.group(1).strip()
+    return json.loads(text)
+
+
+def load_routines_cache():
+    if not ROUTINES_CACHE_PATH.exists():
+        return {"routines": [], "updated_at": None}
+    return json.loads(ROUTINES_CACHE_PATH.read_text())
+
+
+def _refresh_routines_worker():
+    global ROUTINES_REFRESHING
+    ids = ", ".join(ROUTINE_IDS.values())
+    prompt = (
+        f"Use the RemoteTrigger tool to fetch the current status of these two routine ids: {ids}. "
+        "For each, call action \"get\" (for its config/enabled state) and action \"list_runs\" "
+        "(for its most recent run session, if any). Then respond with ONLY a JSON array, no prose, "
+        "no markdown code fence, one object per routine shaped exactly like: "
+        '{"id": "<trigger id>", "name": "<name>", "enabled": true, "cron_expression": "<cron>", '
+        '"next_run_at": "<iso timestamp or null>", "last_fired_at": "<iso timestamp or null>", '
+        '"last_run": {"status": "<active|complete|error|...>", "title": "<run title>", '
+        '"last_event_at": "<iso timestamp>", "url": "<claude.ai session url>"} or null if it has never run}. '
+        "Nothing else in your response — it is parsed as JSON directly, so a stray sentence breaks it."
+    )
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--allowed-tools", "RemoteTrigger"],
+            capture_output=True, text=True, timeout=90,
+        )
+        routines = _extract_json(proc.stdout)
+        ROUTINES_CACHE_PATH.write_text(json.dumps({"routines": routines, "updated_at": time.time()}, indent=2))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[routines] refresh failed: {exc}")
+    finally:
+        with ROUTINES_LOCK:
+            ROUTINES_REFRESHING = False
+
+
+def maybe_refresh_routines_cache():
+    """Stale-while-revalidate: GET /api/routines always returns instantly
+    from cache, but kicks off a background refresh if the cache is missing
+    or older than ROUTINES_CACHE_TTL, so the *next* load has fresh data."""
+    global ROUTINES_REFRESHING
+    cache = load_routines_cache()
+    age = time.time() - cache["updated_at"] if cache.get("updated_at") else None
+    if age is not None and age < ROUTINES_CACHE_TTL:
+        return
+    with ROUTINES_LOCK:
+        if ROUTINES_REFRESHING:
+            return
+        ROUTINES_REFRESHING = True
+    threading.Thread(target=_refresh_routines_worker, daemon=True).start()
+
+
+def run_routine_action(run_id, prompt):
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--allowed-tools", "RemoteTrigger"],
+            capture_output=True, text=True, timeout=60,
+        )
+        output = proc.stdout + ("\n[stderr]\n" + proc.stderr if proc.stderr else "")
+        with PREPARE_LOCK:
+            ROUTINE_JOBS[run_id] = {"status": "done" if proc.returncode == 0 else "error", "output": output}
+    except Exception as exc:  # noqa: BLE001
+        with PREPARE_LOCK:
+            ROUTINE_JOBS[run_id] = {"status": "error", "output": f"Failed to run: {exc}"}
+    finally:
+        # whatever just happened almost certainly changed status -- force
+        # a fresh fetch on the next GET instead of waiting out the TTL.
+        with ROUTINES_LOCK:
+            if ROUTINES_CACHE_PATH.exists():
+                ROUTINES_CACHE_PATH.unlink()
+
+
 # -------------------------------------------------------------- HTTP glue --
 
 class Handler(BaseHTTPRequestHandler):
@@ -594,6 +694,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _try_serve_static(self, path):
+        """Serve the Vite-built React app in web-dist/ (see frontend/,
+        2026-09-15 rewrite) -- unlike the old hand-written web/ this has
+        hashed asset filenames under assets/, so it's a real directory
+        walk instead of 3 hardcoded paths. Falls back to index.html for
+        any unresolved non-file path so client-side view state survives a
+        manual reload; returns None (not a 404) so callers can still fall
+        through to /api/* routes, which this is intentionally never
+        called for (see do_GET)."""
+        rel = path.lstrip("/") or "index.html"
+        candidate = (WEB_DIR / rel).resolve()
+        if WEB_DIR.resolve() not in candidate.parents and candidate != WEB_DIR.resolve():
+            return self._send_json({"error": "forbidden"}, 403)  # path traversal guard
+        if not candidate.is_file():
+            candidate = WEB_DIR / "index.html"
+        if not candidate.exists():
+            return None
+        content_type = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
+        return self._send_file(candidate, content_type)
+
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
@@ -605,12 +725,10 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         try:
-            if path == "/" or path == "/index.html":
-                return self._send_file(WEB_DIR / "index.html", "text/html")
-            if path == "/app.js":
-                return self._send_file(WEB_DIR / "app.js", "application/javascript")
-            if path == "/styles.css":
-                return self._send_file(WEB_DIR / "styles.css", "text/css")
+            if not path.startswith("/api/"):
+                static_response = self._try_serve_static(path)
+                if static_response is not None:
+                    return static_response
 
             if path == "/api/applications":
                 return self._send_json({"rows": parse_readme_table(), "legend": STATUS_LEGEND})
@@ -677,6 +795,24 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "not found"}, 404)
                 return self._send_json(info)
 
+            if path == "/api/routines":
+                maybe_refresh_routines_cache()
+                cache = load_routines_cache()
+                return self._send_json({
+                    "routines": cache["routines"],
+                    "updated_at": cache["updated_at"],
+                    "refreshing": ROUTINES_REFRESHING,
+                })
+
+            m = re.match(r"^/api/routines/run/([^/]+)/log$", path)
+            if m:
+                run_id = m.group(1)
+                with PREPARE_LOCK:
+                    info = ROUTINE_JOBS.get(run_id)
+                if info is None:
+                    return self._send_json({"error": "not found"}, 404)
+                return self._send_json(info)
+
             return self._send_json({"error": "not found"}, 404)
         except Exception as exc:  # noqa: BLE001
             return self._send_json({"error": str(exc)}, 500)
@@ -737,6 +873,42 @@ class Handler(BaseHTTPRequestHandler):
                     PREPARE_JOBS[run_id] = {"status": "running", "output": "", "started": time.time()}
                 update_job_status(job_id_in, "preparing")
                 thread = threading.Thread(target=run_prepare_job, args=(run_id, job), daemon=True)
+                thread.start()
+                return self._send_json({"run_id": run_id})
+
+            m = re.match(r"^/api/routines/([^/]+)/run$", path)
+            if m:
+                key = m.group(1)
+                trigger_id = ROUTINE_IDS.get(key)
+                if trigger_id is None:
+                    return self._send_json({"error": f"unknown routine: {key}"}, 404)
+                run_id = uuid.uuid4().hex[:12]
+                with PREPARE_LOCK:
+                    ROUTINE_JOBS[run_id] = {"status": "running", "output": ""}
+                prompt = (
+                    f'Use the RemoteTrigger tool, action "run", trigger_id "{trigger_id}". '
+                    "Report in one line whether it started successfully."
+                )
+                thread = threading.Thread(target=run_routine_action, args=(run_id, prompt), daemon=True)
+                thread.start()
+                return self._send_json({"run_id": run_id})
+
+            m = re.match(r"^/api/routines/([^/]+)/enabled$", path)
+            if m:
+                key = m.group(1)
+                trigger_id = ROUTINE_IDS.get(key)
+                if trigger_id is None:
+                    return self._send_json({"error": f"unknown routine: {key}"}, 404)
+                enabled = bool(body.get("enabled"))
+                run_id = uuid.uuid4().hex[:12]
+                with PREPARE_LOCK:
+                    ROUTINE_JOBS[run_id] = {"status": "running", "output": ""}
+                prompt = (
+                    f'Use the RemoteTrigger tool, action "update", trigger_id "{trigger_id}", '
+                    f'body {{"enabled": {"true" if enabled else "false"}}}. '
+                    "Report in one line whether it succeeded."
+                )
+                thread = threading.Thread(target=run_routine_action, args=(run_id, prompt), daemon=True)
                 thread.start()
                 return self._send_json({"run_id": run_id})
 

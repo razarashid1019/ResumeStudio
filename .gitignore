@@ -11,3 +11,9 @@ data/openclaw_raw.txt
 data/logs/
 *.bak
 .DS_Store
+
+# React frontend (frontend/, 2026-09-15 rewrite) build artifacts/deps --
+# web-dist/ is rebuilt by the .app launcher on every run if stale.
+frontend/node_modules/
+web-dist/
+data/routines_cache.json

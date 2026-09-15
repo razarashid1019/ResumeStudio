@@ -9,8 +9,15 @@ directly against `~/resume-workspace/ResumeSkills/resume/`, no separate database
   `127.0.0.1:8765` only. Parses `resume/applications/README.md` and
   `resume/applications/<company>.md` on every request (no caching), and reads/writes
   `resume/data/job-board.json` for sourced-but-not-yet-applied listings.
-- **`web/`** — vanilla HTML/CSS/JS frontend, no build step. `app.js` does all
-  rendering client-side (including a small hand-rolled markdown-to-HTML renderer).
+- **`frontend/`** — React + Vite + TypeScript + Tailwind + shadcn/ui, with a
+  few components pulled from Aceternity UI and Skiper UI for the animated
+  bits (Pipeline view's tracing-beam, background-beams, hand-rolled sparkles;
+  Automation view's spotlight-hover cards). Builds to `web-dist/` (gitignored
+  build artifact, not committed), which is what the server actually serves.
+  Replaced the original hand-written `web/` (2026-09-15 rewrite; that vanilla
+  JS/no-build-step version is kept at `web-legacy/` for reference, not served
+  by anything). Standing preference for future UI work across projects:
+  this same stack, see the `ui-stack-preference` memory.
 - **`ResumeStudio.app/`** — hand-built `.app` bundle (no Xcode). Its launcher
   (`Contents/MacOS/ResumeStudio`) starts the Python server if it isn't already
   running, then opens `http://127.0.0.1:8765` in a Chrome app-mode window.
@@ -30,8 +37,14 @@ directly against `~/resume-workspace/ResumeSkills/resume/`, no separate database
 
 ## Dev workflow — READ BEFORE EDITING
 
-- **Frontend changes** (`web/*.html`, `*.css`, `*.js`): just reload the browser tab —
-  the server reads these files fresh on every request.
+- **Frontend changes** (`frontend/src/**`): the `.app` launcher rebuilds `web-dist/`
+  automatically on next launch if anything under `frontend/src` or `vite.config.ts`
+  is newer than the last build — so `open ResumeStudio.app` after an edit is
+  usually enough. For rapid iteration instead, `cd frontend && npm run dev`
+  runs Vite's dev server (hot reload, proxies `/api/*` to the already-running
+  Python server on 8765) — open that URL instead of 8765 directly while
+  actively editing, then switch back to the `.app` launcher when done so the
+  real build gets picked up.
 - **Backend changes** (`server/app.py`): the running Python process has the old code
   loaded in memory. Kill it and relaunch:
   ```
@@ -97,11 +110,30 @@ system, not an arbitrary rainbow.
   resume + drafts the detail file, then stops for manual review/submit.
 - No login/auth on the local server (single user, localhost-only).
 - No live Gmail sync button in the app itself — the server still has no Gmail
-  credentials of its own. As of 2026-09, a separate **daily cloud routine**
-  (`trig_013iKdgrAbqqfQJpXdago6Uf`, created via Claude Code's `/schedule`, not
-  part of this repo's code) handles that instead: it runs on Anthropic's cloud
-  with a Gmail MCP connector, reads the OpenClaw digest, filters/dedupes, tailors
-  resumes for anything shortlisted, and commits straight into the private
-  `resume` repo — this app just needs to be open (it pulls on startup) to see the
-  result. Manually pulling new listings from a pasted digest via Claude in chat
-  still works the same way as before, into the same file.
+  credentials of its own. As of 2026-09, two separate **cloud routines**
+  (created via Claude Code's `/schedule`, not part of this repo's code, but
+  controllable from the Automation view below) handle that instead:
+  - `ResumeStudio Daily Digest` (`trig_01NvD59Y3gTqpQP8tPNZtn5M`) — fires
+    2:30pm daily. Runs on Anthropic's cloud with a Gmail MCP connector,
+    reads the OpenClaw digest via `scripts/ingest_openclaw.py` (in the
+    `resume` repo, not here), filters/dedupes, tailors resumes for anything
+    shortlisted, commits straight into the private `resume` repo, and emails
+    a numbered report.
+  - `ResumeStudio Approval Checker` (`trig_01J8HbayG8GP4f6WfEhaH62c`) — fires
+    hourly, watches for a reply to that email approving items by number/name,
+    marks them `approved_for_submission`, and pushes a phone notification.
+  This app just needs to be open (it pulls on startup) to see whatever either
+  routine committed. Manually pulling new listings from a pasted digest via
+  Claude in chat still works the same way as before, into the same file.
+  **Actually submitting an application is never automated** by either
+  routine — confirmed a headless `claude -p` process has no browser-tool
+  access at all (only `RemoteTrigger`/Gmail-via-connector work headless), so
+  the real form-fill/submit step always requires a live, manually-triggered
+  Claude Code + Chrome session.
+- **Automation view** (`frontend/src/views/Automation.tsx`) shows both
+  routines' live status and lets you run-now / enable / disable them —
+  backed by `run_routine_action()` in `app.py`, which shells out to
+  `claude -p --allowed-tools RemoteTrigger` the same way "Prepare
+  Application" shells out for tailoring. Status is cached
+  (`data/routines_cache.json`, gitignored) with a 5-minute
+  stale-while-revalidate TTL since each round-trip is slow (10-30s+).

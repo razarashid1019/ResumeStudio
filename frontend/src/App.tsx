@@ -1,0 +1,90 @@
+import { useState } from "react";
+import {
+  LayoutDashboard,
+  Briefcase,
+  FileText,
+  Mic,
+  FileStack,
+  Workflow,
+  Bot,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import Dashboard from "@/views/Dashboard";
+import JobBoard from "@/views/JobBoard";
+import Applications from "@/views/Applications";
+import InterviewPrep from "@/views/InterviewPrep";
+import Resumes from "@/views/Resumes";
+import Pipeline from "@/views/Pipeline";
+import Automation from "@/views/Automation";
+
+const VIEWS = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, accent: "var(--view-dashboard)" },
+  { id: "jobs", label: "Job Board", icon: Briefcase, accent: "var(--view-jobs)" },
+  { id: "applications", label: "Applications", icon: FileText, accent: "var(--view-applications)" },
+  { id: "interview", label: "Interview Prep", icon: Mic, accent: "var(--view-interview)" },
+  { id: "resumes", label: "Resumes", icon: FileStack, accent: "var(--view-resumes)" },
+  { id: "pipeline", label: "Pipeline", icon: Workflow, accent: "#a78bfa" },
+  { id: "automation", label: "Automation", icon: Bot, accent: "#34d399" },
+] as const;
+
+type ViewId = (typeof VIEWS)[number]["id"];
+
+export default function App() {
+  const [view, setView] = useState<ViewId>("dashboard");
+  const active = VIEWS.find((v) => v.id === view)!;
+
+  return (
+    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
+      <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-sidebar/60 backdrop-blur-xl">
+        <div className="flex items-center gap-2.5 px-5 py-5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-violet-500 text-sm font-semibold text-primary-foreground">
+            RS
+          </div>
+          <span className="text-[15px] font-semibold tracking-tight">ResumeStudio</span>
+        </div>
+
+        <nav className="flex flex-1 flex-col gap-1 px-3">
+          {VIEWS.map((v) => {
+            const isActive = v.id === view;
+            return (
+              <button
+                key={v.id}
+                onClick={() => setView(v.id)}
+                className={cn(
+                  "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-secondary text-foreground"
+                    : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
+                )}
+              >
+                <v.icon
+                  size={16}
+                  strokeWidth={2}
+                  style={{ color: isActive ? v.accent : undefined }}
+                  className="shrink-0"
+                />
+                {v.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="px-5 py-4 text-[11px] text-muted-foreground">
+          Local · 127.0.0.1
+        </div>
+      </aside>
+
+      <main className="flex-1 overflow-y-auto">
+        <div key={active.id} className="mx-auto max-w-5xl px-10 py-10 animate-in fade-in duration-300">
+          {view === "dashboard" && <Dashboard onNavigate={setView} />}
+          {view === "jobs" && <JobBoard />}
+          {view === "applications" && <Applications />}
+          {view === "interview" && <InterviewPrep />}
+          {view === "resumes" && <Resumes />}
+          {view === "pipeline" && <Pipeline />}
+          {view === "automation" && <Automation />}
+        </div>
+      </main>
+    </div>
+  );
+}

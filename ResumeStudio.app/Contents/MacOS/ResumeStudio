@@ -13,6 +13,24 @@ is_server_up() {
   curl -s -o /dev/null -m 1 "$URL/api/applications"
 }
 
+# Rebuild the React frontend (frontend/, 2026-09-15 rewrite) if its source
+# changed since the last build. web-dist/ is gitignored -- it's always a
+# local build artifact, never committed -- so a fresh clone or pull needs
+# this to produce anything at all, not just to pick up edits.
+FRONTEND_DIR="$APP_HOME/frontend"
+WEB_DIST="$APP_HOME/web-dist"
+if [ -d "$FRONTEND_DIR" ]; then
+  NEEDS_BUILD=0
+  if [ ! -f "$WEB_DIST/index.html" ]; then
+    NEEDS_BUILD=1
+  elif [ -n "$(find "$FRONTEND_DIR/src" "$FRONTEND_DIR/vite.config.ts" -newer "$WEB_DIST/index.html" 2>/dev/null)" ]; then
+    NEEDS_BUILD=1
+  fi
+  if [ "$NEEDS_BUILD" = "1" ]; then
+    ( cd "$FRONTEND_DIR" && npm run build ) >> "$SERVER_LOG" 2>&1
+  fi
+fi
+
 if ! is_server_up; then
   # stale pid file cleanup
   if [ -f "$PID_FILE" ]; then
