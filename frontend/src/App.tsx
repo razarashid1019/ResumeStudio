@@ -1,11 +1,10 @@
 import { useState } from "react";
 import {
-  LayoutDashboard,
+  Workflow,
   Briefcase,
   FileText,
   Mic,
   FileStack,
-  Workflow,
   Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -14,16 +13,18 @@ import JobBoard from "@/views/JobBoard";
 import Applications from "@/views/Applications";
 import InterviewPrep from "@/views/InterviewPrep";
 import Resumes from "@/views/Resumes";
-import Pipeline from "@/views/Pipeline";
 import Automation from "@/views/Automation";
 
+// "Dashboard" and "Pipeline" used to be two separate views -- merged into
+// one (2026-09-15) since the automation pipeline visualization is meant
+// to be the actual heart of the app, not a secondary page next to a more
+// conventional stat-tile dashboard.
 const VIEWS = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, accent: "var(--view-dashboard)" },
+  { id: "dashboard", label: "Pipeline", icon: Workflow, accent: "#a78bfa" },
   { id: "jobs", label: "Job Board", icon: Briefcase, accent: "var(--view-jobs)" },
   { id: "applications", label: "Applications", icon: FileText, accent: "var(--view-applications)" },
   { id: "interview", label: "Interview Prep", icon: Mic, accent: "var(--view-interview)" },
   { id: "resumes", label: "Resumes", icon: FileStack, accent: "var(--view-resumes)" },
-  { id: "pipeline", label: "Pipeline", icon: Workflow, accent: "#a78bfa" },
   { id: "automation", label: "Automation", icon: Bot, accent: "#34d399" },
 ] as const;
 
@@ -76,12 +77,11 @@ export default function App() {
 
       <main className="flex-1 overflow-y-auto">
         <div key={active.id} className="mx-auto max-w-5xl px-10 py-10 animate-in fade-in duration-300">
-          {view === "dashboard" && <Dashboard onNavigate={setView} />}
+          {view === "dashboard" && <Dashboard />}
           {view === "jobs" && <JobBoard />}
           {view === "applications" && <Applications />}
           {view === "interview" && <InterviewPrep />}
           {view === "resumes" && <Resumes />}
-          {view === "pipeline" && <Pipeline />}
           {view === "automation" && <Automation />}
         </div>
       </main>
