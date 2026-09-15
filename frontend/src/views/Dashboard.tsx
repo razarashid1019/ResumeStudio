@@ -55,7 +55,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-14">
       {/* ------------------------------------------------------------ hero */}
-      <div className="relative -mx-10 -mt-10 overflow-hidden border-b border-border/60 px-10 pb-12 pt-14">
+      <div className="relative -mx-4 -mt-6 overflow-hidden border-b border-border/60 px-4 pb-8 pt-8 sm:-mx-6 sm:px-6 md:-mx-10 md:-mt-10 md:px-10 md:pb-12 md:pt-14">
         <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_60%_50%_at_50%_0%,rgba(139,92,246,0.14),transparent)]" />
         <BackgroundBeams className="opacity-40" />
         <Sparkles count={60} />
