@@ -6,6 +6,7 @@ import { Sparkles } from "@/components/Sparkles";
 import { BackgroundBeams } from "@/components/ui/background-beams";
 import { FlowNode } from "@/components/FlowNode";
 import { FlowConnector } from "@/components/FlowConnector";
+import { ApplyLoopPanel } from "@/components/ApplyLoopPanel";
 
 // This IS the app now, not a page next to it -- the automation pipeline
 // (job-board.json's actual status values) as a continuous live flow,
@@ -106,6 +107,11 @@ export default function Dashboard() {
               <FlowNode label={b.label} count={jobs ? jobCount(b.status) : 0} color={b.color} size="sm" delay={0.55 + i * 0.1} />
             </motion.div>
           ))}
+        </div>
+
+        {/* start + watch the last, always-manual step */}
+        <div className="mt-10">
+          <ApplyLoopPanel />
         </div>
 
         {/* continuation into real-world outcomes */}

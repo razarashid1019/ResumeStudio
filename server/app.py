@@ -73,6 +73,42 @@ ROUTINES_LOCK = threading.Lock()
 ROUTINES_REFRESHING = False
 ROUTINE_JOBS = {}  # run_id -> {"status": "running"|"done"|"error", "output": str}
 
+# ---------------------------------------------------------------- apply loop --
+# Actually filling out and submitting a form needs a live, interactive
+# Claude Code session with the claude-in-chrome browser tools -- confirmed
+# 2026-09-15 that headless `claude -p` has neither those NOR PushNotification
+# access locally (it does have RemoteTrigger, which is why the routines
+# section above works but this one can't follow the same shell-out pattern).
+# So "starting the loop" from the dashboard can't itself drive a browser --
+# it records a request + live progress that an interactive session (asked
+# in chat to "run the apply loop") reads and writes to, via these fields.
+# See README.md's "Running the apply loop" section for the actual procedure.
+APPLY_LOOP_STATE_PATH = DATA_DIR / "apply_loop_state.json"
+APPLY_LOOP_LOCK = threading.Lock()
+APPLY_LOOP_DEFAULT = {
+    "status": "idle",  # idle | requested | running | done | error
+    "requested_at": None,
+    "started_at": None,
+    "finished_at": None,
+    "current": None,  # {"company", "role"} being worked on right now
+    "completed": [],  # [{"company", "role"}]
+    "failed": [],  # [{"company", "role", "reason"}]
+    "summary": None,
+}
+
+
+def load_apply_loop_state():
+    if not APPLY_LOOP_STATE_PATH.exists():
+        return dict(APPLY_LOOP_DEFAULT)
+    try:
+        return {**APPLY_LOOP_DEFAULT, **json.loads(APPLY_LOOP_STATE_PATH.read_text())}
+    except Exception:
+        return dict(APPLY_LOOP_DEFAULT)
+
+
+def save_apply_loop_state(state):
+    APPLY_LOOP_STATE_PATH.write_text(json.dumps(state, indent=2) + "\n")
+
 STATUS_LEGEND = [
     "Staged — not submitted",
     "Applied",
@@ -813,6 +849,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"error": "not found"}, 404)
                 return self._send_json(info)
 
+            if path == "/api/apply-loop":
+                with APPLY_LOOP_LOCK:
+                    state = load_apply_loop_state()
+                jobs = load_job_board()
+                queued = [
+                    {"id": j["id"], "company": j["company"], "role": j["role"]}
+                    for j in jobs if j.get("status") == "approved_for_submission"
+                ]
+                return self._send_json({**state, "queued": queued})
+
             return self._send_json({"error": "not found"}, 404)
         except Exception as exc:  # noqa: BLE001
             return self._send_json({"error": str(exc)}, 500)
@@ -911,6 +957,45 @@ class Handler(BaseHTTPRequestHandler):
                 thread = threading.Thread(target=run_routine_action, args=(run_id, prompt), daemon=True)
                 thread.start()
                 return self._send_json({"run_id": run_id})
+
+            if path == "/api/apply-loop/request":
+                with APPLY_LOOP_LOCK:
+                    state = load_apply_loop_state()
+                    if state["status"] == "running":
+                        return self._send_json({"error": "already running"}, 409)
+                    state.update({
+                        "status": "requested", "requested_at": time.time(),
+                        "started_at": None, "finished_at": None,
+                        "current": None, "completed": [], "failed": [], "summary": None,
+                    })
+                    save_apply_loop_state(state)
+                return self._send_json(state)
+
+            if path == "/api/apply-loop/progress":
+                with APPLY_LOOP_LOCK:
+                    state = load_apply_loop_state()
+                    for key in ("status", "current", "completed", "failed"):
+                        if key in body:
+                            state[key] = body[key]
+                    if state["status"] == "running" and not state["started_at"]:
+                        state["started_at"] = time.time()
+                    save_apply_loop_state(state)
+                return self._send_json(state)
+
+            if path == "/api/apply-loop/complete":
+                with APPLY_LOOP_LOCK:
+                    state = load_apply_loop_state()
+                    state["status"] = body.get("status", "done")
+                    state["summary"] = body.get("summary")
+                    state["current"] = None
+                    state["finished_at"] = time.time()
+                    save_apply_loop_state(state)
+                return self._send_json(state)
+
+            if path == "/api/apply-loop/reset":
+                with APPLY_LOOP_LOCK:
+                    save_apply_loop_state(dict(APPLY_LOOP_DEFAULT))
+                return self._send_json(dict(APPLY_LOOP_DEFAULT))
 
             return self._send_json({"error": "not found"}, 404)
         except Exception as exc:  # noqa: BLE001

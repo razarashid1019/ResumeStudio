@@ -17,3 +17,4 @@ data/logs/
 frontend/node_modules/
 web-dist/
 data/routines_cache.json
+data/apply_loop_state.json

@@ -126,3 +126,31 @@ export const setRoutineEnabled = (id: string, enabled: boolean) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
+
+// ----------------------------------------------------------- apply loop --
+// Actually submitting an application always needs a live, interactive
+// Claude Code + Chrome session (confirmed 2026-09-15: headless `claude -p`
+// has neither browser tools nor PushNotification access locally) -- so
+// "starting the loop" here just records a request + live progress that
+// an interactive session (asked in chat to "run the apply loop") reads
+// and writes to. See README.md's "Running the apply loop" section.
+
+export type ApplyLoopJobRef = { id?: string; company: string; role: string };
+
+export type ApplyLoopState = {
+  status: "idle" | "requested" | "running" | "done" | "error";
+  requested_at: number | null;
+  started_at: number | null;
+  finished_at: number | null;
+  current: ApplyLoopJobRef | null;
+  completed: ApplyLoopJobRef[];
+  failed: (ApplyLoopJobRef & { reason?: string })[];
+  summary: string | null;
+  queued: ApplyLoopJobRef[];
+};
+
+export const getApplyLoop = () => api<ApplyLoopState>("/api/apply-loop");
+
+export const requestApplyLoop = () => api<ApplyLoopState>("/api/apply-loop/request", { method: "POST" });
+
+export const resetApplyLoop = () => api<ApplyLoopState>("/api/apply-loop/reset", { method: "POST" });

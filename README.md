@@ -126,10 +126,16 @@ system, not an arbitrary rainbow.
   routine committed. Manually pulling new listings from a pasted digest via
   Claude in chat still works the same way as before, into the same file.
   **Actually submitting an application is never automated** by either
-  routine — confirmed a headless `claude -p` process has no browser-tool
-  access at all (only `RemoteTrigger`/Gmail-via-connector work headless), so
-  the real form-fill/submit step always requires a live, manually-triggered
-  Claude Code + Chrome session.
+  routine — confirmed a headless *local* `claude -p` process has neither
+  browser-tool access nor PushNotification access (only `RemoteTrigger`
+  works locally headless, which is why the Automation view below can
+  shell out for routine control but this app can't shell out for
+  anything Gmail- or browser-shaped). Gmail *does* work headless, but
+  only inside a **cloud** routine session (a different execution context
+  with its own connector) — that's what the digest/approval routines
+  actually run as, not a local subprocess. So the real form-fill/submit
+  step always requires a live, manually-triggered Claude Code + Chrome
+  session on this machine. See "Running the apply loop" below.
 - **Automation view** (`frontend/src/views/Automation.tsx`) shows both
   routines' live status and lets you run-now / enable / disable them —
   backed by `run_routine_action()` in `app.py`, which shells out to
@@ -137,3 +143,45 @@ system, not an arbitrary rainbow.
   Application" shells out for tailoring. Status is cached
   (`data/routines_cache.json`, gitignored) with a 5-minute
   stale-while-revalidate TTL since each round-trip is slow (10-30s+).
+
+## Running the apply loop
+
+The Pipeline view's "Apply Loop" card (`frontend/src/components/ApplyLoopPanel.tsx`)
+lets Raza click "Start Apply Loop", but clicking it only sets
+`data/apply_loop_state.json`'s status to `"requested"` — a plain Python
+server has no way to spawn the interactive, browser-capable session the
+actual work needs (see above). The loop only actually runs when **you're
+asked, in chat, to "run the apply loop"** — by Raza directly, or by him
+relaying the phone notification from the approval-checker routine. If
+you're an agent reading this because that just happened, here's the
+actual procedure:
+
+1. `curl -s http://127.0.0.1:8765/api/apply-loop` — if `queued` is empty,
+   there's nothing to do; tell Raza and stop. Otherwise mark it started:
+   `curl -X POST http://127.0.0.1:8765/api/apply-loop/progress -H 'Content-Type: application/json' -d '{"status":"running"}'`
+2. For each job in `queued` (one at a time, in order):
+   - Post which one you're on:
+     `-d '{"status":"running","current":{"company":"...","role":"..."}}'`
+     to `.../apply-loop/progress`.
+   - Read its tailored resume (`tailored/<slug>.tex`, or the compiled
+     PDF in `build/`) and its detail file (`applications/<company>.md`)
+     for the answers it already drafted.
+   - Use claude-in-chrome to open the job's `link`, fill the form from
+     that detail file, and **wait for Raza to actually confirm before
+     clicking Submit** — screenshot each step so he's watching, same as
+     any other live browser action. Never create an account or enter
+     credentials to get past a login wall; if a posting turns out to
+     need one, treat it like `manual_only` (see below) instead.
+   - On success: `update_job_status(job_id, "applied")` equivalent via
+     `POST /api/jobs/<id>/status {"status":"applied"}`, add a row/update
+     `applications/README.md` the same way "Prepare Application" does,
+     and post progress with that job appended to `completed`.
+   - On failure (dead posting, turned out to need an account, etc.):
+     append to `failed` with a short `reason` instead, and move on —
+     one bad job shouldn't stop the rest of the queue.
+3. When the queue is empty, post a short summary:
+   `curl -X POST .../apply-loop/complete -d '{"status":"done","summary":"..."}'`.
+
+Never skip straight to `/complete` without actually doing the above —
+the whole point of this flow is that a human watches every real
+submission happen.
