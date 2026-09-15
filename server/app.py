@@ -37,7 +37,7 @@ README_PATH = APPLICATIONS_DIR / "README.md"
 TAILORED_DIR = RESUME_DIR / "tailored"
 BUILD_DIR = RESUME_DIR / "build"
 MASTER_TEX = RESUME_DIR / "master-resume.tex"
-JOB_BOARD_PATH = DATA_DIR / "job-board.json"
+JOB_BOARD_PATH = RESUME_DIR / "data" / "job-board.json"
 JOB_PHOTOS_PATH = DATA_DIR / "job-photos.json"
 PHOTOS_LOCK = threading.Lock()
 
@@ -68,6 +68,28 @@ STATUS_LEGEND = [
     "Rejected",
     "Withdrawn",
 ]
+
+# --------------------------------------------------------------- git sync --
+
+def git_sync(paths, message):
+    """Best-effort commit + push of the given paths (relative to RESUME_DIR)
+    in the resume repo, so local edits don't sit uncommitted indefinitely —
+    the cloud digest routine reads this repo's remote and needs it current
+    to dedupe correctly. Never raises: a failed sync (offline, no remote,
+    conflict) shouldn't break the request that triggered it; the next
+    successful sync catches up."""
+    try:
+        subprocess.run(["git", "add", *paths], cwd=str(RESUME_DIR), check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "commit", "-m", message], cwd=str(RESUME_DIR), capture_output=True, text=True,
+        )
+        if result.returncode != 0 and "nothing to commit" not in result.stdout:
+            print(f"[git_sync] commit failed: {result.stdout}\n{result.stderr}")
+            return
+        subprocess.run(["git", "push"], cwd=str(RESUME_DIR), check=True, capture_output=True, timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[git_sync] failed for {paths}: {exc}")
+
 
 # ---------------------------------------------------------------- parsing --
 
@@ -191,6 +213,7 @@ def update_readme_status(company, new_status, date_applied=None):
         raise ValueError(f"No application row found for company: {company}")
 
     README_PATH.write_text("\n".join(lines) + "\n")
+    git_sync(["applications/README.md"], f"Update status: {company} -> {new_status}")
     return True
 
 
@@ -233,6 +256,7 @@ def load_job_board():
 
 def save_job_board(jobs):
     JOB_BOARD_PATH.write_text(json.dumps(jobs, indent=2) + "\n")
+    git_sync(["data/job-board.json"], "Update job board")
 
 
 def load_job_photos():
@@ -512,6 +536,10 @@ Do the following, in order:
    format precisely. Do not alter any other row or any other part of the file.
 6. Do not open a browser, fill out any external form, or submit anything anywhere — this task
    only produces local files for Raza to review before he applies himself.
+7. Commit and push your work so it doesn't sit uncommitted: `cd resume && git add tailored/<slug>.tex
+   applications/<company-slug>.md applications/README.md && git commit -m "Stage application: <Company>
+   — <Role>" && git push`. Only stage those specific files — nothing else in the tree. If the push
+   fails (offline, conflict), say so in your summary but don't treat it as a fatal error.
 
 When done, print a short summary of exactly what you created."""
 
@@ -519,7 +547,7 @@ When done, print a short summary of exactly what you created."""
 def run_prepare_job(job_id, job):
     log_path = LOG_DIR / f"{job_id}.log"
     prompt = build_prepare_prompt(job)
-    allowed_tools = "Read Write Edit Glob Grep Bash(latexmk*) Bash(pdflatex*)"
+    allowed_tools = "Read Write Edit Glob Grep Bash(latexmk*) Bash(pdflatex*) Bash(git*) Bash(cd*)"
     try:
         proc = subprocess.run(
             ["claude", "-p", prompt, "--allowed-tools", allowed_tools],
@@ -717,7 +745,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": str(exc)}, 500)
 
 
+def pull_resume_repo():
+    """Best-effort fast-forward pull on startup, so anything the daily cloud
+    digest routine committed overnight is visible before the dashboard loads.
+    Never blocks startup: offline, diverged history, or no remote all just
+    mean the server serves whatever's on disk already."""
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"], cwd=str(RESUME_DIR),
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            print(f"[startup] git pull: {result.stdout.strip()}")
+        else:
+            print(f"[startup] git pull skipped: {result.stderr.strip()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] git pull failed: {exc}")
+
+
 def main():
+    pull_resume_repo()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     pid_path = DATA_DIR / "server.pid"
     pid_path.write_text(str(os.getpid()))

@@ -8,7 +8,7 @@ directly against `~/resume-workspace/ResumeSkills/resume/`, no separate database
 - **`server/app.py`** — Python 3 stdlib HTTP server (no pip deps), binds to
   `127.0.0.1:8765` only. Parses `resume/applications/README.md` and
   `resume/applications/<company>.md` on every request (no caching), and reads/writes
-  `data/job-board.json` for sourced-but-not-yet-applied listings.
+  `resume/data/job-board.json` for sourced-but-not-yet-applied listings.
 - **`web/`** — vanilla HTML/CSS/JS frontend, no build step. `app.js` does all
   rendering client-side (including a small hand-rolled markdown-to-HTML renderer).
 - **`ResumeStudio.app/`** — hand-built `.app` bundle (no Xcode). Its launcher
@@ -16,10 +16,17 @@ directly against `~/resume-workspace/ResumeSkills/resume/`, no separate database
   running, then opens `http://127.0.0.1:8765` in a Chrome app-mode window.
   Symlinked into `~/Applications/ResumeStudio.app` for Spotlight/Launchpad.
 - **`data/settings.json`** — points at the ResumeSkills repo path + server port.
-- **`data/job-board.json`** — the only real "database" this app owns. Everything else
-  (applications, resumes, interview prep) is read live from the markdown/LaTeX
-  already in ResumeSkills — this app is a viewer/controller on top of it, not a
-  replacement store.
+- **`resume/data/job-board.json`** — the only real "database" this app owns. Lives
+  *inside* the private `resume` git repo (not in this app's own `data/`, and not
+  gitignored there) specifically so the daily cloud digest routine (see
+  `resume-workspace/ResumeSkills` conversation history — no in-repo doc for it yet)
+  can read/write it by cloning that repo, and so this app's own writes to it
+  (`save_job_board`, `update_readme_status`) auto-commit+push via `git_sync()` in
+  `app.py`. The server also does a best-effort `git pull --ff-only` on startup
+  (`pull_resume_repo()`) to pick up whatever the cloud routine committed overnight.
+  Everything else (applications, resumes, interview prep) is read live from the
+  markdown/LaTeX already in ResumeSkills — this app is a viewer/controller on top
+  of it, not a replacement store.
 
 ## Dev workflow — READ BEFORE EDITING
 
@@ -47,8 +54,10 @@ curl -s http://127.0.0.1:8765/api/applications | python3 -m json.tool | head -20
 curl -s http://127.0.0.1:8765/api/jobs | python3 -m json.tool | head -20
 ```
 If you touched `update_readme_status`, diff `resume/applications/README.md` against
-git (the main ResumeSkills repo has it excluded from git, so keep a manual `.bak`
-mental note, or `cp` it before testing) to confirm only the intended row changed.
+git afterward to confirm only the intended row changed — it's a real tracked file
+in the `resume` repo now, so `git diff` there is the actual source of truth, not a
+manual `.bak` (the app still writes a scratch `.bak` before editing, but it's
+gitignored and just a local undo net, not what to diff against).
 
 ## Regenerating the icon
 
@@ -87,6 +96,12 @@ system, not an arbitrary rainbow.
 - No auto-submission of applications anywhere — "Prepare Application" tailors a
   resume + drafts the detail file, then stops for manual review/submit.
 - No login/auth on the local server (single user, localhost-only).
-- No live Gmail sync button — the server has no Gmail credentials of its own;
-  pulling new OpenClaw listings happens through Claude in chat, which then writes
-  into `data/job-board.json` directly.
+- No live Gmail sync button in the app itself — the server still has no Gmail
+  credentials of its own. As of 2026-09, a separate **daily cloud routine**
+  (`trig_013iKdgrAbqqfQJpXdago6Uf`, created via Claude Code's `/schedule`, not
+  part of this repo's code) handles that instead: it runs on Anthropic's cloud
+  with a Gmail MCP connector, reads the OpenClaw digest, filters/dedupes, tailors
+  resumes for anything shortlisted, and commits straight into the private
+  `resume` repo — this app just needs to be open (it pulls on startup) to see the
+  result. Manually pulling new listings from a pasted digest via Claude in chat
+  still works the same way as before, into the same file.
