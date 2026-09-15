@@ -23,7 +23,7 @@ if ! is_server_up; then
     fi
     rm -f "$PID_FILE"
   fi
-  nohup "$PYTHON_BIN" "$APP_HOME/server/app.py" >> "$SERVER_LOG" 2>&1 &
+  nohup "$PYTHON_BIN" -u "$APP_HOME/server/app.py" >> "$SERVER_LOG" 2>&1 &
   disown
 
   for i in $(seq 1 30); do
