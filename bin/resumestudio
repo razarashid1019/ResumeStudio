@@ -1,6 +1,6 @@
 #!/bin/bash
 # Simple CLI helper for the ResumeStudio server (the .app launcher doesn't need this).
-APP_HOME="/Users/razarashid/ResumeStudio"
+APP_HOME="/Users/razarashid/Desktop/College/Vibe Code Projects/ResumeStudio"
 
 case "$1" in
   start)
