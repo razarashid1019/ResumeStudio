@@ -763,8 +763,30 @@ def pull_resume_repo():
         print(f"[startup] git pull failed: {exc}")
 
 
+def compile_missing_pdfs():
+    """The cloud digest routine's sandbox likely has no LaTeX toolchain, so it
+    only ever commits .tex + .md, never a PDF. Catch up here, locally, where
+    latexmk actually exists. Best-effort per file — one bad .tex shouldn't
+    block the rest, and this must never block server startup."""
+    if not TAILORED_DIR.exists() or not shutil.which("latexmk"):
+        return
+    for tex_path in TAILORED_DIR.glob("*.tex"):
+        pdf_path = BUILD_DIR / f"{tex_path.stem}.pdf"
+        if pdf_path.exists():
+            continue
+        try:
+            subprocess.run(
+                ["latexmk", "-pdf", "-interaction=nonstopmode", f"-outdir={BUILD_DIR}", str(tex_path)],
+                cwd=str(RESUME_DIR), capture_output=True, timeout=60,
+            )
+            print(f"[startup] compiled {tex_path.name}" + (" ok" if pdf_path.exists() else " — still no PDF, check the .log"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[startup] compile failed for {tex_path.name}: {exc}")
+
+
 def main():
     pull_resume_repo()
+    compile_missing_pdfs()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     pid_path = DATA_DIR / "server.pid"
     pid_path.write_text(str(os.getpid()))
