@@ -41,8 +41,8 @@ export function ApplyLoopPanel() {
           <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="mt-3">
             <p className="text-xs text-muted-foreground">
               {queuedCount > 0
-                ? `${queuedCount} approved and ready to submit.`
-                : "Nothing approved yet — approve items from the daily digest email first."}
+                ? `${queuedCount} auto-approved and ready to submit.`
+                : "Nothing queued yet — the daily digest auto-approves anything worth pursuing."}
             </p>
             {queuedCount > 0 && (
               <ul className="mt-2 space-y-1 text-xs text-muted-foreground">

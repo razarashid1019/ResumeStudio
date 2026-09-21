@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -79,10 +80,10 @@ ROUTINE_JOBS = {}  # run_id -> {"status": "running"|"done"|"error", "output": st
 # 2026-09-15 that headless `claude -p` has neither those NOR PushNotification
 # access locally (it does have RemoteTrigger, which is why the routines
 # section above works but this one can't follow the same shell-out pattern).
-# So "starting the loop" from the dashboard can't itself drive a browser --
-# it records a request + live progress that an interactive session (asked
-# in chat to "run the apply loop") reads and writes to, via these fields.
-# See README.md's "Running the apply loop" section for the actual procedure.
+# So /request opens a real Terminal.app window running `claude` *interactively*
+# (not -p) via osascript -- that session has full tool access, including the
+# browser, same as any Terminal-launched Claude Code. It reads/writes the rest
+# of these fields as live progress. See README.md's "Running the apply loop".
 APPLY_LOOP_STATE_PATH = DATA_DIR / "apply_loop_state.json"
 APPLY_LOOP_LOCK = threading.Lock()
 APPLY_LOOP_DEFAULT = {
@@ -108,6 +109,29 @@ def load_apply_loop_state():
 
 def save_apply_loop_state(state):
     APPLY_LOOP_STATE_PATH.write_text(json.dumps(state, indent=2) + "\n")
+
+
+def launch_apply_loop_session():
+    """Open Terminal.app running an interactive `claude` session primed to
+    run the apply loop -- the browser-driving, human-watched work `claude -p`
+    can't do. Fire-and-forget: the session reports progress back via the
+    /api/apply-loop/* endpoints, same as if a human had typed the prompt."""
+    prompt = (
+        f'Read "Running the apply loop" in {APP_HOME}/README.md and follow it '
+        "exactly against http://127.0.0.1:8765/api/apply-loop."
+    )
+    allowed_tools = "Bash(curl*) Read mcp__claude-in-chrome"
+    shell_cmd = (
+        f"cd {shlex.quote(str(APP_HOME))} && "
+        f"claude {shlex.quote(prompt)} --allowed-tools {shlex.quote(allowed_tools)}"
+    )
+    applescript = (
+        'tell application "Terminal"\n'
+        "  activate\n"
+        f"  do script {json.dumps(shell_cmd)}\n"
+        "end tell"
+    )
+    subprocess.Popen(["osascript", "-e", applescript])
 
 STATUS_LEGEND = [
     "Staged — not submitted",
@@ -969,6 +993,7 @@ class Handler(BaseHTTPRequestHandler):
                         "current": None, "completed": [], "failed": [], "summary": None,
                     })
                     save_apply_loop_state(state)
+                launch_apply_loop_session()
                 return self._send_json(state)
 
             if path == "/api/apply-loop/progress":

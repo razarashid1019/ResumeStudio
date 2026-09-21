@@ -147,14 +147,13 @@ system, not an arbitrary rainbow.
 ## Running the apply loop
 
 The Pipeline view's "Apply Loop" card (`frontend/src/components/ApplyLoopPanel.tsx`)
-lets Raza click "Start Apply Loop", but clicking it only sets
-`data/apply_loop_state.json`'s status to `"requested"` — a plain Python
-server has no way to spawn the interactive, browser-capable session the
-actual work needs (see above). The loop only actually runs when **you're
-asked, in chat, to "run the apply loop"** — by Raza directly, or by him
-relaying the phone notification from the approval-checker routine. If
-you're an agent reading this because that just happened, here's the
-actual procedure:
+lets Raza click "Start Apply Loop". That sets `data/apply_loop_state.json`'s
+status to `"requested"` *and* `launch_apply_loop_session()` in `app.py` opens
+a new Terminal.app window running `claude` interactively (via `osascript`,
+not `claude -p` — headless has neither browser tools nor a human watching),
+pre-loaded with the prompt "read this section and follow it." So the loop
+now starts itself; this section is what that session (or you, if Raza asks
+in chat instead — same procedure either way) actually does:
 
 1. `curl -s http://127.0.0.1:8765/api/apply-loop` — if `queued` is empty,
    there's nothing to do; tell Raza and stop. Otherwise mark it started:
