@@ -5,11 +5,11 @@ import { getApplyLoop, requestApplyLoop, resetApplyLoop, type ApplyLoopState } f
 
 /**
  * Starting and watching the apply loop, right where "Approved" sits in the
- * flow. Submitting a real application always needs a live, interactive
- * Claude Code + Chrome session (see the comment in lib/api.ts) -- this
- * panel can request one and show its live progress, but the actual run
- * happens because you told an interactive session "run the apply loop",
- * not because this button reached out and started one on its own.
+ * flow. Submitting a real application needs an interactive Claude Code +
+ * Chrome session (see the comment in lib/api.ts); clicking Start here
+ * launches one (a new Terminal.app window, via launch_apply_loop_session()
+ * in app.py) and shows its live progress as it works, fully unattended,
+ * through the approved queue.
  */
 export function ApplyLoopPanel() {
   const [state, setState] = useState<ApplyLoopState | null>(null);
@@ -66,9 +66,8 @@ export function ApplyLoopPanel() {
         {state.status === "requested" && (
           <motion.div key="requested" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="mt-3">
             <p className="text-xs text-muted-foreground">
-              Waiting for you to pick it up — open Claude Code and say{" "}
-              <code className="rounded bg-secondary px-1 py-0.5 text-[11px]">run the apply loop</code>. It'll drive
-              your real browser live, on {queuedCount} approved application{queuedCount === 1 ? "" : "s"}.
+              Launching an interactive session in Terminal — it'll work through {queuedCount} approved
+              application{queuedCount === 1 ? "" : "s"} on its own, no confirmation needed per submit.
             </p>
             <button
               onClick={() => resetApplyLoop().then(refresh)}

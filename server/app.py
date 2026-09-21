@@ -113,9 +113,10 @@ def save_apply_loop_state(state):
 
 def launch_apply_loop_session():
     """Open Terminal.app running an interactive `claude` session primed to
-    run the apply loop -- the browser-driving, human-watched work `claude -p`
-    can't do. Fire-and-forget: the session reports progress back via the
-    /api/apply-loop/* endpoints, same as if a human had typed the prompt."""
+    run the apply loop -- browser-driving work headless `claude -p` can't
+    do (no browser-tool access at all). Runs fully unattended end to end;
+    the session reports progress back via the /api/apply-loop/* endpoints,
+    same as if a human had typed the prompt."""
     prompt = (
         f'Read "Running the apply loop" in {APP_HOME}/README.md and follow it '
         "exactly against http://127.0.0.1:8765/api/apply-loop."

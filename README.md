@@ -106,36 +106,36 @@ system, not an arbitrary rainbow.
 
 ## What's deliberately NOT built
 
-- No auto-submission of applications anywhere — "Prepare Application" tailors a
-  resume + drafts the detail file, then stops for manual review/submit.
 - No login/auth on the local server (single user, localhost-only).
 - No live Gmail sync button in the app itself — the server still has no Gmail
-  credentials of its own. As of 2026-09, two separate **cloud routines**
-  (created via Claude Code's `/schedule`, not part of this repo's code, but
-  controllable from the Automation view below) handle that instead:
+  credentials of its own. As of 2026-09, a **cloud routine** (created via
+  Claude Code's `/schedule`, not part of this repo's code, but controllable
+  from the Automation view below) handles that instead:
   - `ResumeStudio Daily Digest` (`trig_01NvD59Y3gTqpQP8tPNZtn5M`) — fires
     2:30pm daily. Runs on Anthropic's cloud with a Gmail MCP connector,
     reads the OpenClaw digest via `scripts/ingest_openclaw.py` (in the
-    `resume` repo, not here), filters/dedupes, tailors resumes for anything
-    shortlisted, commits straight into the private `resume` repo, and emails
-    a numbered report.
-  - `ResumeStudio Approval Checker` (`trig_01J8HbayG8GP4f6WfEhaH62c`) — fires
-    hourly, watches for a reply to that email approving items by number/name,
-    marks them `approved_for_submission`, and pushes a phone notification.
-  This app just needs to be open (it pulls on startup) to see whatever either
+    `resume` repo, not here), filters/dedupes, researches and ranks every
+    new/shortlisted listing itself (no manual shortlisting step anymore —
+    Raza turned that off 2026-09-21), tailors + stages anything worth
+    pursuing straight to `approved_for_submission`, rules out the rest,
+    commits straight into the private `resume` repo, and emails a report.
+  This app just needs to be open (it pulls on startup) to see whatever the
   routine committed. Manually pulling new listings from a pasted digest via
   Claude in chat still works the same way as before, into the same file.
-  **Actually submitting an application is never automated** by either
-  routine — confirmed a headless *local* `claude -p` process has neither
-  browser-tool access nor PushNotification access (only `RemoteTrigger`
-  works locally headless, which is why the Automation view below can
-  shell out for routine control but this app can't shell out for
-  anything Gmail- or browser-shaped). Gmail *does* work headless, but
-  only inside a **cloud** routine session (a different execution context
-  with its own connector) — that's what the digest/approval routines
-  actually run as, not a local subprocess. So the real form-fill/submit
-  step always requires a live, manually-triggered Claude Code + Chrome
-  session on this machine. See "Running the apply loop" below.
+  - `ResumeStudio Approval Checker` (`trig_01J8HbayG8GP4f6WfEhaH62c`) used to
+    watch for an email reply approving staged applications by number/name.
+    **Disabled 2026-09-21** — there's no separate approval step to check for
+    anymore now that the digest auto-approves directly.
+  Actually submitting an application **is now automated**, fully unattended
+  — see "Running the apply loop" below. The digest routine still can't do
+  it itself (a **cloud** routine session has Gmail access but no browser
+  tools), so form-fill/submit happens in a separate **local**, Terminal-launched
+  interactive `claude` session with claude-in-chrome, kicked off by clicking
+  "Start Apply Loop" in the Pipeline view (or asking in chat). It runs to
+  completion without anyone watching each submission — the one thing it still
+  won't do is submit through a job with an unresolved red flag the digest
+  routine already flagged (see "Running the apply loop" below), or create an
+  account/enter credentials to get past a login wall.
 - **Automation view** (`frontend/src/views/Automation.tsx`) shows both
   routines' live status and lets you run-now / enable / disable them —
   backed by `run_routine_action()` in `app.py`, which shells out to
@@ -150,10 +150,11 @@ The Pipeline view's "Apply Loop" card (`frontend/src/components/ApplyLoopPanel.t
 lets Raza click "Start Apply Loop". That sets `data/apply_loop_state.json`'s
 status to `"requested"` *and* `launch_apply_loop_session()` in `app.py` opens
 a new Terminal.app window running `claude` interactively (via `osascript`,
-not `claude -p` — headless has neither browser tools nor a human watching),
-pre-loaded with the prompt "read this section and follow it." So the loop
-now starts itself; this section is what that session (or you, if Raza asks
-in chat instead — same procedure either way) actually does:
+not `claude -p`, which has no browser-tool access at all), pre-loaded with
+the prompt "read this section and follow it." So the loop now starts
+itself and runs unattended end to end — this section is what that session
+(or you, if Raza asks in chat instead — same procedure either way) actually
+does:
 
 1. `curl -s http://127.0.0.1:8765/api/apply-loop` — if `queued` is empty,
    there's nothing to do; tell Raza and stop. Otherwise mark it started:
@@ -165,22 +166,31 @@ in chat instead — same procedure either way) actually does:
    - Read its tailored resume (`tailored/<slug>.tex`, or the compiled
      PDF in `build/`) and its detail file (`applications/<company>.md`)
      for the answers it already drafted.
-   - Use claude-in-chrome to open the job's `link`, fill the form from
-     that detail file, and **wait for Raza to actually confirm before
-     clicking Submit** — screenshot each step so he's watching, same as
-     any other live browser action. Never create an account or enter
+   - **Check the detail file for an unresolved `## ⚠️ Open items / red
+     flags before submitting` section first.** If it has one, don't
+     submit — this isn't a style judgment call, it's the digest routine
+     telling you it couldn't confirm something material (eligibility,
+     whether the link even works, a possible duplicate). Treat it like
+     `manual_only` below instead: skip it, `reason` = that section's
+     text, move on.
+   - Otherwise, use claude-in-chrome to open the job's `link`, fill the
+     form from that detail file, and submit it — no pause for
+     confirmation, Raza has approved autonomous submission for anything
+     that reaches this point clean. Never create an account or enter
      credentials to get past a login wall; if a posting turns out to
      need one, treat it like `manual_only` (see below) instead.
    - On success: `update_job_status(job_id, "applied")` equivalent via
      `POST /api/jobs/<id>/status {"status":"applied"}`, add a row/update
      `applications/README.md` the same way "Prepare Application" does,
      and post progress with that job appended to `completed`.
-   - On failure (dead posting, turned out to need an account, etc.):
-     append to `failed` with a short `reason` instead, and move on —
-     one bad job shouldn't stop the rest of the queue.
+   - On failure (dead posting, turned out to need an account, unresolved
+     red flag, etc.): append to `failed` with a short `reason` instead,
+     and move on — one bad job shouldn't stop the rest of the queue.
 3. When the queue is empty, post a short summary:
    `curl -X POST .../apply-loop/complete -d '{"status":"done","summary":"..."}'`.
 
-Never skip straight to `/complete` without actually doing the above —
-the whole point of this flow is that a human watches every real
-submission happen.
+Never skip straight to `/complete` without actually doing the above.
+This runs fully unattended now (Raza isn't watching each submission
+live) — which makes the red-flag check above the only thing standing
+between "the agent's judgment" and "the agent guessing on a fact it
+already told you it didn't know." Don't skip that check.
