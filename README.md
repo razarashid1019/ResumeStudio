@@ -3,6 +3,12 @@
 A local, double-clickable Mac app for tracking your job search — reads and writes
 directly against `~/resume-workspace/ResumeSkills/resume/`, no separate database.
 
+## Setup
+
+`data/settings.json` is gitignored (it's a local, per-install config, not app
+code) — copy `data/settings.json.example` to `data/settings.json` and point
+`repo_path` at wherever you've checked out `ResumeSkills` before running this.
+
 ## Architecture
 
 - **`server/app.py`** — Python 3 stdlib HTTP server (no pip deps), binds to

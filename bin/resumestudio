@@ -1,6 +1,6 @@
 #!/bin/bash
 # Simple CLI helper for the ResumeStudio server (the .app launcher doesn't need this).
-APP_HOME="/Users/razarashid/Desktop/College/Vibe Code Projects/ResumeStudio"
+APP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 case "$1" in
   start)

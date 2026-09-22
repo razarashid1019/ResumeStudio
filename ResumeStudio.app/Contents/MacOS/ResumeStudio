@@ -2,7 +2,7 @@
 # ResumeStudio launcher — starts the local server if needed, opens an app-mode window.
 set -e
 
-APP_HOME="/Users/razarashid/Desktop/College/Vibe Code Projects/ResumeStudio"
+APP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PORT=8765
 URL="http://127.0.0.1:${PORT}"
 PID_FILE="$APP_HOME/data/server.pid"

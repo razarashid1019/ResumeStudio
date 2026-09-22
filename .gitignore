@@ -2,6 +2,7 @@
 data/job-board.json
 data/job-photos.json
 data/secrets.json
+data/settings.json
 data/streetview_cache/
 data/streetview_status.json
 data/wiki-image-cache.json
