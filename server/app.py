@@ -114,9 +114,12 @@ def save_apply_loop_state(state):
 def launch_apply_loop_session():
     """Open Terminal.app running an interactive `claude` session primed to
     run the apply loop -- browser-driving work headless `claude -p` can't
-    do (no browser-tool access at all). Runs fully unattended end to end;
-    the session reports progress back via the /api/apply-loop/* endpoints,
-    same as if a human had typed the prompt."""
+    do (no browser-tool access at all). Still confirms each real submission
+    with Raza live (see README's "Running the apply loop" -- that gate isn't
+    optional, Claude Code's own permission system enforces it regardless of
+    what this session's prompt says); this just launches it automatically
+    instead of Raza having to notice `status: "requested"` and ask for it
+    himself. Reports progress back via the /api/apply-loop/* endpoints."""
     prompt = (
         f'Read "Running the apply loop" in {APP_HOME}/README.md and follow it '
         "exactly against http://127.0.0.1:8765/api/apply-loop."

@@ -126,16 +126,21 @@ system, not an arbitrary rainbow.
     watch for an email reply approving staged applications by number/name.
     **Disabled 2026-09-21** — there's no separate approval step to check for
     anymore now that the digest auto-approves directly.
-  Actually submitting an application **is now automated**, fully unattended
-  — see "Running the apply loop" below. The digest routine still can't do
-  it itself (a **cloud** routine session has Gmail access but no browser
-  tools), so form-fill/submit happens in a separate **local**, Terminal-launched
-  interactive `claude` session with claude-in-chrome, kicked off by clicking
-  "Start Apply Loop" in the Pipeline view (or asking in chat). It runs to
-  completion without anyone watching each submission — the one thing it still
-  won't do is submit through a job with an unresolved red flag the digest
-  routine already flagged (see "Running the apply loop" below), or create an
-  account/enter credentials to get past a login wall.
+  Actually submitting an application still needs Raza live for each one —
+  see "Running the apply loop" below. Tried removing that 2026-09-21 and
+  found it isn't actually optional: submission is gated by Claude Code's
+  own permission system, not just by what this README tells a session to
+  do, so a from-a-README "don't pause for confirmation" instruction can't
+  deliver true zero-touch submission anyway. What *did* change 2026-09-21:
+  clicking "Start Apply Loop" in the Pipeline view (or asking in chat) now
+  actually launches the session itself — a **local**, Terminal-launched
+  interactive `claude` session with claude-in-chrome (the digest routine
+  can't do this part itself; a **cloud** routine session has Gmail access
+  but no browser tools) — instead of just setting a status flag and
+  waiting for Raza to notice. It still won't submit through a job with an
+  unresolved red flag the digest routine already flagged (see "Running the
+  apply loop" below), or create an account/enter credentials to get past a
+  login wall.
 - **Automation view** (`frontend/src/views/Automation.tsx`) shows both
   routines' live status and lets you run-now / enable / disable them —
   backed by `run_routine_action()` in `app.py`, which shells out to
@@ -152,9 +157,8 @@ status to `"requested"` *and* `launch_apply_loop_session()` in `app.py` opens
 a new Terminal.app window running `claude` interactively (via `osascript`,
 not `claude -p`, which has no browser-tool access at all), pre-loaded with
 the prompt "read this section and follow it." So the loop now starts
-itself and runs unattended end to end — this section is what that session
-(or you, if Raza asks in chat instead — same procedure either way) actually
-does:
+itself — this section is what that session (or you, if Raza asks in chat
+instead — same procedure either way) actually does:
 
 1. `curl -s http://127.0.0.1:8765/api/apply-loop` — if `queued` is empty,
    there's nothing to do; tell Raza and stop. Otherwise mark it started:
@@ -174,11 +178,15 @@ does:
      `manual_only` below instead: skip it, `reason` = that section's
      text, move on.
    - Otherwise, use claude-in-chrome to open the job's `link`, fill the
-     form from that detail file, and submit it — no pause for
-     confirmation, Raza has approved autonomous submission for anything
-     that reaches this point clean. Never create an account or enter
-     credentials to get past a login wall; if a posting turns out to
-     need one, treat it like `manual_only` (see below) instead.
+     form from that detail file, and **wait for Raza to actually confirm
+     before clicking Submit** — screenshot each step so he's watching,
+     same as any other live browser action. (This isn't optional even if
+     you're an unattended cron-launched session with nobody obviously
+     watching — Claude Code's own permission system will hold real-world
+     submissions for confirmation regardless, so don't bother trying to
+     skip it.) Never create an account or enter credentials to get past a
+     login wall; if a posting turns out to need one, treat it like
+     `manual_only` (see below) instead.
    - On success: `update_job_status(job_id, "applied")` equivalent via
      `POST /api/jobs/<id>/status {"status":"applied"}`, add a row/update
      `applications/README.md` the same way "Prepare Application" does,
@@ -189,8 +197,9 @@ does:
 3. When the queue is empty, post a short summary:
    `curl -X POST .../apply-loop/complete -d '{"status":"done","summary":"..."}'`.
 
-Never skip straight to `/complete` without actually doing the above.
-This runs fully unattended now (Raza isn't watching each submission
-live) — which makes the red-flag check above the only thing standing
-between "the agent's judgment" and "the agent guessing on a fact it
-already told you it didn't know." Don't skip that check.
+Never skip straight to `/complete` without actually doing the above —
+the whole point of this flow is that a human confirms every real
+submission before it happens. The red-flag check in step 2 is a
+separate, earlier filter on top of that: it keeps you from even opening
+a job whose fit the digest routine already flagged as unverified,
+before Raza's confirmation step ever comes into play.

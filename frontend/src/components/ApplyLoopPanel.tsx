@@ -8,8 +8,10 @@ import { getApplyLoop, requestApplyLoop, resetApplyLoop, type ApplyLoopState } f
  * flow. Submitting a real application needs an interactive Claude Code +
  * Chrome session (see the comment in lib/api.ts); clicking Start here
  * launches one (a new Terminal.app window, via launch_apply_loop_session()
- * in app.py) and shows its live progress as it works, fully unattended,
- * through the approved queue.
+ * in app.py) and shows its live progress as it works through the approved
+ * queue -- it still confirms with Raza before each real submission, same
+ * as before, just without him having to notice the request and launch it
+ * himself.
  */
 export function ApplyLoopPanel() {
   const [state, setState] = useState<ApplyLoopState | null>(null);
@@ -67,7 +69,7 @@ export function ApplyLoopPanel() {
           <motion.div key="requested" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="mt-3">
             <p className="text-xs text-muted-foreground">
               Launching an interactive session in Terminal — it'll work through {queuedCount} approved
-              application{queuedCount === 1 ? "" : "s"} on its own, no confirmation needed per submit.
+              application{queuedCount === 1 ? "" : "s"}, confirming each real submission with you live.
             </p>
             <button
               onClick={() => resetApplyLoop().then(refresh)}
