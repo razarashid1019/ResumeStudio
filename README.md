@@ -3,6 +3,10 @@
 A local, double-clickable Mac app for tracking your job search — reads and writes
 directly against `~/resume-workspace/ResumeSkills/resume/`, no separate database.
 
+This repo also hosts the **Resume Skills** package — 22 Claude Code / Cursor /
+Windsurf / etc. skills for resume writing, job matching, interview prep, and
+more, installable independently of the app itself. See [SKILLS.md](SKILLS.md).
+
 ## Setup
 
 `data/settings.json` is gitignored (it's a local, per-install config, not app
